@@ -112,13 +112,22 @@ impl Info {
     }
 }
 
+/// Home folder: `$HOME`, or `%USERPROFILE%` on Windows.
 fn home() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
+/// Whether an executable is in the PATH (also as `name.exe` on Windows).
 fn in_path(name: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
+    let names = [
+        name.to_string(),
+        format!("{name}{}", std::env::consts::EXE_SUFFIX),
+    ];
+    std::env::var_os("PATH").is_some_and(|p| {
+        std::env::split_paths(&p).any(|d| names.iter().any(|n| d.join(n).is_file()))
+    })
 }
 
 fn yt_dlp() -> PathBuf {
