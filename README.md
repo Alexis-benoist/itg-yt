@@ -16,7 +16,7 @@ Le dossier `~/ITG-YouTube/<Titre>/` contient :
 
 | fichier | contenu |
 |---|---|
-| `<Titre>.sm` | les 5 difficultés (Beginner → Challenge), générées par [itg-charter](https://github.com/Alexis-benoist/itg-charter) |
+| `<Titre>.sm` | les charts (niveaux du profil choisi), générés par [itg-charter](https://github.com/Alexis-benoist/itg-charter), intégré à itg-yt |
 | `<Titre>.ogg` | l'audio en OGG Vorbis q5 (≈160 kb/s, transparent à l'oreille, 3 à 4 Mo) |
 | `<Titre>-bg.mp4` | le clip en fond animé, H.264 jusqu'à 1080p, 30 i/s, sans son |
 | `bn.png`, `bg.png`, `jacket.png` | bannière 418×164, fond 1920×1080 et jaquette 512×512 tirés de la miniature |
@@ -44,15 +44,22 @@ ln -sfn ~/ITG-YouTube ~/Downloads/ITGmania-1.1.0-Linux-no-songs/itgmania/Songs/Y
 3. Encodages ffmpeg **en parallèle** (audio, images, et vidéo en priorité basse), eux aussi mis en
    cache : relancer (autre seed, autres difficultés) ne réencode rien, et changer la qualité de la
    vidéo ne réencode que la vidéo.
-4. Dès que l'OGG et les images sont prêts, `itg-charter gen` crée le dossier et génère les charts sur
-   l'OGG, celui que le jeu lira, pendant que la vidéo s'encode encore.
-5. `itg-charter decorate` ajoute ensuite la vidéo de fond (`#BGCHANGES`, calée pour démarrer au
-   début de l'audio).
+4. Dès que l'OGG et les images sont prêts, itg-charter (appelé directement, comme bibliothèque)
+   crée le dossier et génère les charts sur l'OGG, celui que le jeu lira, pendant que la vidéo
+   s'encode encore.
+5. itg-charter ajoute ensuite la vidéo de fond (`#BGCHANGES`, calée pour démarrer au début de
+   l'audio).
 
 ## Options
 
-`-d easy,hard` (défaut : toutes), `-s 42` (seed, défaut 0), `-o DIR`, `--no-video`, `--no-stems`
-(sans Demucs, plus rapide), `--device cpu`, `--title`, `--artist` (une seule vidéo), `--cache DIR`.
+Niveaux (échelle ITGmania 1 à 10, comme `itg-charter gen`) :
+- `-p full` / `-p beginner` : profils (full = 2, 4, 6, 8, 10 ; beginner = 2, 3, 4, 5 ; le défaut
+  est celui d'itg-charter) ;
+- `-m 2-5` ou `-m 1,3,6` : niveaux au choix (5 au plus, un par slot) ;
+- `-d easy,hard` : à la place, les slots classiques avec la densité typique des charts humains.
+
+`-s 42` (seed, défaut 0), `-o DIR`, `--no-video`, `--no-stems` (sans Demucs, plus rapide),
+`--device cpu`, `--title`, `--artist` (une seule vidéo), `--cache DIR`.
 
 Plusieurs chansons :
 - `--jobs 2` (défaut) : chansons téléchargées et encodées en même temps. Les charts (Demucs sur
@@ -77,18 +84,19 @@ l'étape la plus longue : pour aller plus vite, `--video-height 720 --video-pres
 
 ## Releases
 
-Pousser un tag `vX.Y.Z` publie une release GitHub avec le binaire Linux (`.tar.gz` + sha256).
+Chaque push sur `main` publie automatiquement une release GitHub `vX.Y.<n° de build>` avec les
+binaires Linux, macOS (arm64, x86_64) et Windows (quand ils compilent), en `.tar.gz`/`.zip` +
+sha256. Pousser un tag `vX.Y.Z` publie aussi une release sous ce nom.
 
 ## Prérequis
 
-- [itg-charter](https://github.com/Alexis-benoist/itg-charter) compilé, avec les sous-commandes
-  `gen --banner …` et `decorate` : dans le PATH, dans `~/itg-charter/target/release/`, ou désigné
-  par `ITG_CHARTER_BIN`.
+- Rien pour itg-charter : il est compilé dans itg-yt (dépendance Cargo). Pour les stems Demucs,
+  le venv décrit dans le README d'itg-charter (sinon `--no-stems`, ou avertissement et mix seul).
 - yt-dlp avec ses scripts de résolution YouTube et un runtime JavaScript (node ou deno) :
   `uv tool install "yt-dlp[default]"`.
 - ffmpeg avec libvorbis et libx264.
 
-Les outils peuvent être remplacés par `ITG_YT_DLP`, `ITG_FFMPEG` et `ITG_CHARTER_BIN`.
+Les outils peuvent être remplacés par `ITG_YT_DLP` et `ITG_FFMPEG`.
 
 ## Licence
 

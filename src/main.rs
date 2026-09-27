@@ -5,17 +5,16 @@
 //! 2. encodes, in parallel with ffmpeg and into the same cache: the audio to OGG Vorbis
 //!    q5 (≈160 kb/s, what ITG packs use), the thumbnail to banner / background / jacket
 //!    images, and the video to silent H.264 (background movie, low CPU priority);
-//! 3. as soon as the OGG and the images are ready, `itg-charter gen` builds the song
-//!    folder from them (charts computed on the file the game plays) while the video is
-//!    still encoding;
-//! 4. `itg-charter decorate` then adds the background movie.
+//! 3. as soon as the OGG and the images are ready, itg-charter generates the charts
+//!    (called as a library) while the video is still encoding;
+//! 4. itg-charter then adds the background movie.
 //!
-//! itg-charter (https://github.com/Alexis-benoist/itg-charter) is used as a program;
-//! it owns everything about the song folder and the `.sm`. Tools can be overridden
-//! with `ITG_YT_DLP`, `ITG_FFMPEG` and `ITG_CHARTER_BIN`.
+//! External tools: yt-dlp and ffmpeg (overridable with `ITG_YT_DLP` and `ITG_FFMPEG`).
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use itg_charter::difficulty::parse_list;
+use itg_charter::song::{self, Charts, SongOptions, VisualFiles};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -40,9 +39,17 @@ struct Args {
     /// How many times a failed yt-dlp call is retried (pause of 2 s, 4 s, 8 s…).
     #[arg(long, default_value_t = 3)]
     yt_retries: u32,
-    /// Difficulties, comma separated: beginner,easy,medium,hard,challenge or "all".
-    #[arg(short, long, default_value = "all")]
-    difficulties: String,
+    /// Named set of meters (used when neither --meters nor --difficulties is given),
+    /// as in itg-charter: beginner = 2,3,4,5; full = 2,4,6,8,10.
+    #[arg(short, long, value_enum, default_value_t = song::Profile::default())]
+    profile: song::Profile,
+    /// Meters to generate on the ITGmania scale (1-10), e.g. "2-5" or "1,3,6" (at most 5).
+    #[arg(short, long, conflicts_with = "difficulties")]
+    meters: Option<String>,
+    /// Instead of meters: difficulty slots with the typical density of human charts,
+    /// comma separated: beginner,easy,medium,hard,challenge or "all".
+    #[arg(short, long)]
+    difficulties: Option<String>,
     /// Random seed of the charts (same seed + same video = same charts).
     #[arg(short, long, default_value_t = 0)]
     seed: u64,
@@ -128,18 +135,6 @@ fn yt_dlp() -> PathBuf {
 
 fn ffmpeg() -> PathBuf {
     std::env::var_os("ITG_FFMPEG").map_or_else(|| PathBuf::from("ffmpeg"), PathBuf::from)
-}
-
-/// The itg-charter binary: `$ITG_CHARTER_BIN`, else `itg-charter` in the PATH, else a
-/// release build in `~/itg-charter`.
-fn itg_charter() -> PathBuf {
-    if let Some(p) = std::env::var_os("ITG_CHARTER_BIN") {
-        return PathBuf::from(p);
-    }
-    if in_path("itg-charter") {
-        return PathBuf::from("itg-charter");
-    }
-    home().join("itg-charter/target/release/itg-charter")
 }
 
 /// A running child process with a label for error messages.
@@ -410,7 +405,9 @@ struct Ctx {
     cache_root: PathBuf,
     output: PathBuf,
     t0: Instant,
-    /// Held while `itg-charter gen` runs: Demucs on a 4 GB GPU, one song at a time.
+    /// Charts to generate for every song.
+    charts: Charts,
+    /// Held while the charts are generated: Demucs on a 4 GB GPU, one song at a time.
     charting: std::sync::Mutex<()>,
 }
 
@@ -647,65 +644,64 @@ fn process(ctx: &Ctx, info: &Info, title: &str, artist: &str) -> Result<PathBuf>
     let [banner, background, jacket] = images.map(Encode::wait);
     let (banner, background, jacket) = (banner?, background?, jacket?);
 
-    // Song folder and charts (one song at a time), while the video keeps encoding.
-    let mut charter = Command::new(itg_charter());
-    charter
-        .arg("gen")
-        .arg(&ogg)
-        .arg("-o")
-        .arg(&ctx.output)
-        .args(["-d", &args.difficulties, "-s", &args.seed.to_string()])
-        .args(["--title", title, "--artist", artist])
-        .arg("--banner")
-        .arg(&banner)
-        .arg("--background")
-        .arg(&background)
-        .arg("--jacket")
-        .arg(&jacket);
-    if args.no_stems {
-        charter.arg("--no-stems");
-    }
-    if let Some(d) = &args.device {
-        charter.args(["--device", d]);
-    }
-    let gen_out = {
+    // Song folder and charts (itg-charter library, one song at a time: Demucs uses the
+    // GPU), while the video keeps encoding.
+    let opts = SongOptions {
+        charts: ctx.charts.clone(),
+        seed: args.seed,
+        output: ctx.output.clone(),
+        title: Some(title.to_string()),
+        artist: Some(artist.to_string()),
+        stems: !args.no_stems,
+        device: args.device.clone(),
+        visuals: VisualFiles {
+            banner: Some(banner),
+            background: Some(background),
+            jacket: Some(jacket),
+            bg_video: None,
+        },
+        ..SongOptions::default()
+    };
+    let sm = {
         let _gpu = ctx.charting.lock().unwrap_or_else(|e| e.into_inner());
         log("generating charts");
-        Job::spawn("itg-charter gen", &mut charter)?.wait()?
+        song::create_song(&ogg, &opts)?
     };
-    for line in String::from_utf8_lossy(&gen_out.stderr).lines() {
-        log(line.trim());
-    }
-    let sm = PathBuf::from(
-        String::from_utf8_lossy(&gen_out.stdout)
-            .trim()
-            .lines()
-            .last()
-            .unwrap_or_default(),
-    );
-    anyhow::ensure!(sm.exists(), "itg-charter did not report a simfile");
 
     if let Some(video) = video {
         log("charts ready, waiting for the video encode");
         let movie = video.wait()?;
-        Job::spawn(
-            "itg-charter decorate",
-            Command::new(itg_charter())
-                .arg("decorate")
-                .arg(&sm)
-                .arg("--bg-video")
-                .arg(&movie),
-        )?
-        .wait()?;
+        song::decorate(
+            &sm,
+            &VisualFiles {
+                bg_video: Some(movie),
+                ..VisualFiles::default()
+            },
+        )?;
     }
     log("done");
     Ok(sm)
 }
 
+/// Charts requested on the command line, checked before any download.
+fn charts_of(args: &Args) -> Result<Charts> {
+    let charts = match (&args.difficulties, &args.meters) {
+        (Some(d), _) => Charts::Slots(parse_list(d)?),
+        (None, Some(m)) => Charts::Meters(song::parse_meters(m)?),
+        (None, None) => Charts::Meters(args.profile.meters()),
+    };
+    if let Charts::Meters(m) = &charts {
+        itg_charter::chart::assign_slots(&itg_charter::model::Model::embedded()?, m)?;
+    }
+    Ok(charts)
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let urls = collect_urls(&args)?;
+    let charts = charts_of(&args)?;
     let ctx = Ctx {
+        charts,
         cache_root: args
             .cache
             .clone()
