@@ -2,16 +2,17 @@
 //!
 //! 1. downloads audio, video (≤1080p) and thumbnail with yt-dlp, in parallel, into a
 //!    cache (`~/.cache/itg-charter/youtube/<id>/`) so that reruns do not download again;
-//! 2. encodes, in parallel with ffmpeg: the audio to OGG Vorbis q5 (≈160 kb/s, what
-//!    ITG packs use), the video to H.264 ≤1080p without sound (background movie), and
-//!    the thumbnail to banner / background / jacket images;
-//! 3. runs `itg-charter gen` on the final OGG (the file the game plays) while the
-//!    video is still encoding;
-//! 4. declares the images and the background movie in the generated `.sm`.
+//! 2. encodes, in parallel with ffmpeg and into the same cache: the audio to OGG Vorbis
+//!    q5 (≈160 kb/s, what ITG packs use), the thumbnail to banner / background / jacket
+//!    images, and the video to silent H.264 (background movie, low CPU priority);
+//! 3. as soon as the OGG and the images are ready, `itg-charter gen` builds the song
+//!    folder from them (charts computed on the file the game plays) while the video is
+//!    still encoding;
+//! 4. `itg-charter decorate` then adds the background movie.
 //!
-//! Tools can be overridden with `ITG_YT_DLP`, `ITG_FFMPEG` and `ITG_CHARTER_BIN`.
-//! itg-charter (https://github.com/Alexis-benoist/itg-charter) is used as a program:
-//! this crate does not link it, it only reads the `.sm` it writes.
+//! itg-charter (https://github.com/Alexis-benoist/itg-charter) is used as a program;
+//! it owns everything about the song folder and the `.sm`. Tools can be overridden
+//! with `ITG_YT_DLP`, `ITG_FFMPEG` and `ITG_CHARTER_BIN`.
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -63,7 +64,7 @@ struct Args {
     /// H.264 quality of the background video (lower = better and bigger).
     #[arg(long, default_value_t = 26)]
     video_crf: u32,
-    /// Download cache folder (default: ~/.cache/itg-charter/youtube).
+    /// Download and encode cache folder (default: ~/.cache/itg-charter/youtube).
     #[arg(long)]
     cache: Option<PathBuf>,
 }
@@ -82,6 +83,11 @@ struct Info {
 
 fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+}
+
+fn in_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
 }
 
 fn yt_dlp() -> PathBuf {
@@ -110,30 +116,6 @@ fn itg_charter() -> PathBuf {
         return PathBuf::from("itg-charter");
     }
     home().join("itg-charter/target/release/itg-charter")
-}
-
-/// Removes characters that would break the `#TAG:VALUE;` syntax (same rule as
-/// itg-charter, which names the song folder after the sanitized title).
-fn sanitize(s: &str) -> String {
-    s.chars()
-        .filter(|c| !matches!(c, ';' | '#' | '\\' | '\n' | '\r'))
-        .map(|c| if c == ':' { '-' } else { c })
-        .collect::<String>()
-        .trim()
-        .to_string()
-}
-
-/// Value of the first `#KEY:VALUE;` tag of a simfile.
-fn sm_tag<'a>(sm: &'a str, key: &str) -> Option<&'a str> {
-    let marker = format!("#{key}:");
-    let start = sm.find(&marker)? + marker.len();
-    let end = sm[start..].find(';')?;
-    Some(sm[start..start + end].trim())
-}
-
-fn in_path(name: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
 }
 
 /// A running child process with a label for error messages.
@@ -166,6 +148,36 @@ impl Job {
             );
         }
         Ok(out)
+    }
+}
+
+/// An encode into the cache: written under a temporary name and renamed when done,
+/// so that an interrupted run never leaves a truncated file that would be reused.
+struct Encode {
+    job: Option<Job>,
+    tmp: PathBuf,
+    path: PathBuf,
+}
+
+impl Encode {
+    /// Starts `cmd` (with the temporary output path appended) unless `path` exists.
+    fn start(what: &str, mut cmd: Command, path: PathBuf) -> Result<Encode> {
+        let ext = path.extension().unwrap_or_default().to_string_lossy();
+        let tmp = path.with_extension(format!("partial.{ext}"));
+        let job = if path.exists() {
+            None
+        } else {
+            Some(Job::spawn(what, cmd.arg(&tmp))?)
+        };
+        Ok(Encode { job, tmp, path })
+    }
+
+    fn wait(self) -> Result<PathBuf> {
+        if let Some(job) = self.job {
+            job.wait()?;
+            std::fs::rename(&self.tmp, &self.path)?;
+        }
+        Ok(self.path)
     }
 }
 
@@ -264,56 +276,19 @@ fn song_names(info: &Info) -> (String, String) {
     (clean_title(&info.title), uploader)
 }
 
-/// Name of the song folder, computed like `itg-charter gen` does from the title.
-fn folder_name(title: &str) -> String {
-    let f = sanitize(title).replace(['/', '?', '*', '"', '<', '>', '|'], "_");
-    if f.is_empty() { "song".into() } else { f }
-}
-
-/// Replaces the value of `#KEY:...;`, or inserts the tag before the first chart.
-fn set_tag(sm: &str, key: &str, value: &str) -> String {
-    let marker = format!("#{key}:");
-    if let Some(start) = sm.find(&marker) {
-        let value_start = start + marker.len();
-        if let Some(end) = sm[value_start..].find(';') {
-            return format!("{}{value}{}", &sm[..value_start], &sm[value_start + end..]);
-        }
-    }
-    let at = sm
-        .find("\n//---")
-        .or_else(|| sm.find("#NOTES"))
-        .unwrap_or(sm.len());
-    format!(
-        "{}\n#{key}:{value};{}",
-        sm[..at].trim_end_matches('\n'),
-        &sm[at..]
-    )
-}
-
-/// Beat at which the audio time is 0 (where the background movie must start).
-/// itg-charter writes one constant BPM: time(beat) = beat × 60 / BPM − OFFSET.
-fn movie_start_beat(sm: &str) -> Result<f64> {
-    let offset: f64 = sm_tag(sm, "OFFSET").context("no #OFFSET")?.parse()?;
-    let bpms = sm_tag(sm, "BPMS").context("no #BPMS")?;
-    anyhow::ensure!(!bpms.contains(','), "BPM changes are not supported: {bpms}");
-    let (_, bpm) = bpms.split_once('=').context("malformed #BPMS")?;
-    Ok(offset * bpm.trim().parse::<f64>()? / 60.0)
-}
-
-/// Adds banner, background, jacket and background movie to the `.sm` text.
-fn add_visuals(text: &str, movie: Option<&str>) -> Result<String> {
-    let mut sm = set_tag(text, "BANNER", "bn.png");
-    sm = set_tag(&sm, "BACKGROUND", "bg.png");
-    sm = set_tag(&sm, "JACKET", "jacket.png");
-    if let Some(movie) = movie {
-        let beat = movie_start_beat(text)?;
-        sm = set_tag(
-            &sm,
-            "BGCHANGES",
-            &format!("{beat:.3}={movie}=1.000=0=0=0=StretchNoLoop===="),
-        );
-    }
-    Ok(sm)
+/// A file name derived from the title (the audio and movie keep it in the song
+/// folder). itg-charter makes it safe for simfile tags; here we only avoid path
+/// separators and characters that file systems reject.
+fn file_stem(title: &str) -> String {
+    let s: String = title
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            c => c,
+        })
+        .collect();
+    let s = s.trim().trim_start_matches('.').to_string();
+    if s.is_empty() { "song".into() } else { s }
 }
 
 fn ffmpeg_cmd() -> Command {
@@ -335,24 +310,17 @@ fn low_priority_ffmpeg_cmd() -> Command {
 }
 
 /// Center-cropped still image of `w`×`h` from the thumbnail.
-fn image_job(thumb: &Path, out: &Path, w: u32, h: u32) -> Result<Job> {
-    Job::spawn(
-        &format!("image {}", out.display()),
-        ffmpeg_cmd()
-            .arg("-i")
-            .arg(thumb)
-            .args([
-                "-vf",
-                &format!(
-                    "scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h}"
-                ),
-                "-frames:v",
-                "1",
-                "-fflags",
-                "+bitexact",
-            ])
-            .arg(out),
-    )
+fn image_encode(thumb: &Path, out: PathBuf, w: u32, h: u32) -> Result<Encode> {
+    let mut cmd = ffmpeg_cmd();
+    cmd.arg("-i").arg(thumb).args([
+        "-vf",
+        &format!("scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h}"),
+        "-frames:v",
+        "1",
+        "-fflags",
+        "+bitexact",
+    ]);
+    Encode::start(&format!("image {w}x{h}"), cmd, out)
 }
 
 fn main() -> Result<()> {
@@ -372,7 +340,7 @@ fn main() -> Result<()> {
     step("reading video metadata");
     let meta = Job::spawn("yt-dlp metadata", yt_dlp_cmd(&args.url).arg("-J"))?.wait()?;
     let info: Info = serde_json::from_slice(&meta.stdout).context("parsing yt-dlp metadata")?;
-    let cache = cache_root.join(sanitize(&info.id).replace(['/', '\\'], "_"));
+    let cache = cache_root.join(file_stem(&info.id));
     std::fs::create_dir_all(&cache)?;
     let (auto_title, auto_artist) = song_names(&info);
     let title = args.title.clone().unwrap_or(auto_title);
@@ -437,76 +405,82 @@ fn main() -> Result<()> {
         Some(cached(&cache, "video").context("video was not downloaded")?)
     };
 
-    // Encodes, in parallel.
-    let folder = folder_name(&title);
-    let dir = output.join(&folder);
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let ogg = dir.join(format!("{folder}.ogg"));
-    let movie_name = format!("{}-bg.mp4", folder.replace(['=', ','], "_"));
-    step("encoding audio, video and images in parallel");
-    let audio_job = Job::spawn(
+    // Encodes into the cache, in parallel. Files already encoded are reused (the video
+    // per height / preset / quality).
+    let stem = file_stem(&title);
+    let encoded = cache.join("encoded");
+    std::fs::create_dir_all(&encoded)?;
+    step("encoding audio, images and video in parallel");
+    let mut audio_cmd = ffmpeg_cmd();
+    audio_cmd.arg("-i").arg(&audio_src).args([
+        "-vn",
+        "-map_metadata",
+        "-1",
+        "-ac",
+        "2",
+        "-ar",
+        "44100",
+        "-c:a",
+        "libvorbis",
+        "-q:a",
+        "5",
+        "-fflags",
+        "+bitexact",
+        "-flags:a",
+        "+bitexact",
+    ]);
+    let audio = Encode::start(
         "audio encode",
-        ffmpeg_cmd()
-            .arg("-i")
-            .arg(&audio_src)
-            .args([
-                "-vn",
+        audio_cmd,
+        encoded.join(format!("{stem}.ogg")),
+    )?;
+    let images = [
+        image_encode(&thumb, encoded.join("bn.png"), 418, 164)?,
+        image_encode(&thumb, encoded.join("bg.png"), 1920, 1080)?,
+        image_encode(&thumb, encoded.join("jacket.png"), 512, 512)?,
+    ];
+    let video = match &video_src {
+        Some(src) => {
+            let dir = encoded.join(format!(
+                "video-{}p-{}-crf{}",
+                args.video_height, args.video_preset, args.video_crf
+            ));
+            std::fs::create_dir_all(&dir)?;
+            let mut cmd = low_priority_ffmpeg_cmd();
+            cmd.arg("-i").arg(src).args([
+                "-an",
                 "-map_metadata",
                 "-1",
-                "-ac",
-                "2",
-                "-ar",
-                "44100",
-                "-c:a",
-                "libvorbis",
-                "-q:a",
-                "5",
-                "-fflags",
-                "+bitexact",
-                "-flags:a",
-                "+bitexact",
-            ])
-            .arg(&ogg),
-    )?;
-    let video_job = match &video_src {
-        Some(src) => Some(Job::spawn(
-            "video encode",
-            low_priority_ffmpeg_cmd()
-                .arg("-i")
-                .arg(src)
-                .args([
-                    "-an",
-                    "-map_metadata",
-                    "-1",
-                    "-vf",
-                    &format!(
-                        "scale=-2:'min({},ih)':flags=lanczos,fps=30",
-                        args.video_height
-                    ),
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    &args.video_preset,
-                    "-crf",
-                    &args.video_crf.to_string(),
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-movflags",
-                    "+faststart",
-                ])
-                .arg(dir.join(&movie_name)),
-        )?),
+                "-vf",
+                &format!(
+                    "scale=-2:'min({},ih)':flags=lanczos,fps=30",
+                    args.video_height
+                ),
+                "-c:v",
+                "libx264",
+                "-preset",
+                &args.video_preset,
+                "-crf",
+                &args.video_crf.to_string(),
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+            ]);
+            Some(Encode::start(
+                "video encode",
+                cmd,
+                dir.join(format!("{stem}-bg.mp4")),
+            )?)
+        }
         None => None,
     };
-    let image_jobs = vec![
-        image_job(&thumb, &dir.join("bn.png"), 418, 164)?,
-        image_job(&thumb, &dir.join("bg.png"), 1920, 1080)?,
-        image_job(&thumb, &dir.join("jacket.png"), 512, 512)?,
-    ];
+    let ogg = audio.wait()?;
+    let [banner, background, jacket] = images.map(Encode::wait);
+    let (banner, background, jacket) = (banner?, background?, jacket?);
 
-    // Charts, as soon as the OGG exists (the video keeps encoding meanwhile).
-    audio_job.wait()?;
-    step("audio ready, generating charts (video still encoding)");
+    // Song folder and charts, while the video keeps encoding.
+    step("audio and images ready, generating charts (video still encoding)");
     let mut charter = Command::new(itg_charter());
     charter
         .arg("gen")
@@ -514,7 +488,13 @@ fn main() -> Result<()> {
         .arg("-o")
         .arg(&output)
         .args(["-d", &args.difficulties, "-s", &args.seed.to_string()])
-        .args(["--title", &title, "--artist", &artist]);
+        .args(["--title", &title, "--artist", &artist])
+        .arg("--banner")
+        .arg(&banner)
+        .arg("--background")
+        .arg(&background)
+        .arg("--jacket")
+        .arg(&jacket);
     if args.no_stems {
         charter.arg("--no-stems");
     }
@@ -523,35 +503,30 @@ fn main() -> Result<()> {
     }
     let gen_out = Job::spawn("itg-charter gen", &mut charter)?.wait()?;
     eprint!("{}", String::from_utf8_lossy(&gen_out.stderr));
-    let sm_path = PathBuf::from(
+    let sm = PathBuf::from(
         String::from_utf8_lossy(&gen_out.stdout)
             .trim()
             .lines()
             .last()
             .unwrap_or_default(),
     );
-    anyhow::ensure!(sm_path.exists(), "itg-charter did not report a simfile");
-    anyhow::ensure!(
-        sm_path.parent() == Some(dir.as_path()),
-        "itg-charter wrote {} instead of {}",
-        sm_path.display(),
-        dir.display()
-    );
+    anyhow::ensure!(sm.exists(), "itg-charter did not report a simfile");
 
-    for j in image_jobs {
-        j.wait()?;
-    }
-    if let Some(j) = video_job {
+    if let Some(video) = video {
         step("waiting for the video encode");
-        j.wait()?;
+        let movie = video.wait()?;
+        Job::spawn(
+            "itg-charter decorate",
+            Command::new(itg_charter())
+                .arg("decorate")
+                .arg(&sm)
+                .arg("--bg-video")
+                .arg(&movie),
+        )?
+        .wait()?;
     }
-    let text = std::fs::read_to_string(&sm_path)?;
-    std::fs::write(
-        &sm_path,
-        add_visuals(&text, video_src.as_ref().map(|_| movie_name.as_str()))?,
-    )?;
     step("done");
-    println!("{}", sm_path.display());
+    println!("{}", sm.display());
     Ok(())
 }
 
@@ -594,21 +569,12 @@ mod tests {
     }
 
     #[test]
-    fn visuals_are_declared_and_movie_starts_at_audio_zero() {
-        let sm = "#TITLE:t;\n#BANNER:;\n#BACKGROUND:;\n#OFFSET:-0.250;\n#BPMS:0.000=120.000;\n#BGCHANGES:;\n\n//---------------dance-single - x----------------\n#NOTES:\n     dance-single:\n     x:\n     Easy:\n     1:\n     0,0,0,0,0:\n1000\n;\n";
-        let out = add_visuals(sm, Some("t-bg.mp4")).unwrap();
-        assert_eq!(sm_tag(&out, "BANNER"), Some("bn.png"));
-        assert_eq!(sm_tag(&out, "BACKGROUND"), Some("bg.png"));
-        assert_eq!(sm_tag(&out, "JACKET"), Some("jacket.png"));
-        // offset -0.25 s at 120 BPM: audio time 0 is beat -0.5.
+    fn file_stems_are_safe() {
+        assert_eq!(file_stem("AC/DC: Back In Black?"), "AC_DC_ Back In Black_");
+        assert_eq!(file_stem("..."), "song");
         assert_eq!(
-            sm_tag(&out, "BGCHANGES"),
-            Some("-0.500=t-bg.mp4=1.000=0=0=0=StretchNoLoop====")
+            file_stem("Yeah! ft. Lil Jon, Ludacris"),
+            "Yeah! ft. Lil Jon, Ludacris"
         );
-        // The JACKET tag goes before the charts, which are untouched.
-        assert!(out.find("#JACKET").unwrap() < out.find("#NOTES").unwrap());
-        assert!(out.ends_with(
-            "#NOTES:\n     dance-single:\n     x:\n     Easy:\n     1:\n     0,0,0,0,0:\n1000\n;\n"
-        ));
     }
 }

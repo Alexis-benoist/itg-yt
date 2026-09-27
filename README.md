@@ -23,11 +23,13 @@ Relancer ITGmania (ou recharger les chansons) pour la voir apparaître.
    Video) [4K] » → « Titre » / « Artiste »).
 2. Téléchargement **en parallèle** de l'audio, de la vidéo (≤ 1080p) et de la miniature, dans un
    cache (`~/.cache/itg-charter/youtube/<id>/`) : relancer ne retélécharge rien.
-3. Encodages ffmpeg **en parallèle** : audio, images, et vidéo (en priorité basse).
-4. Dès que l'OGG est prêt, `itg-charter gen` génère les charts sur ce fichier, celui que le jeu lira,
-   pendant que la vidéo s'encode encore.
-5. Le `.sm` est complété avec la bannière, le fond, la jaquette et la vidéo
-   (`#BGCHANGES`, calée pour démarrer au début de l'audio).
+3. Encodages ffmpeg **en parallèle** (audio, images, et vidéo en priorité basse), eux aussi mis en
+   cache : relancer (autre seed, autres difficultés) ne réencode rien, et changer la qualité de la
+   vidéo ne réencode que la vidéo.
+4. Dès que l'OGG et les images sont prêts, `itg-charter gen` crée le dossier et génère les charts sur
+   l'OGG, celui que le jeu lira, pendant que la vidéo s'encode encore.
+5. `itg-charter decorate` ajoute ensuite la vidéo de fond (`#BGCHANGES`, calée pour démarrer au
+   début de l'audio).
 
 ## Options
 
@@ -39,14 +41,19 @@ Vidéo de fond :
 - `--video-preset veryfast` : vitesse de x264 (défaut `medium`) ;
 - `--video-crf 26` : qualité (plus bas = meilleure et plus grosse).
 
-Ordre de grandeur mesuré pour un clip de 3 min 33 (i7 12 cœurs, GTX 1650) : charts prêts en
-2 min ; OGG 4 Mo ; vidéo 1080p ≈ 70 Mo. L'encodage 1080p est l'étape la plus longue : pour aller
-plus vite, utiliser `--video-height 720 --video-preset veryfast`.
+Mesuré sur « Yeah! » d'Usher (4 min 10, 12 cœurs, GTX 1650, réglages par défaut) : charts prêts
+en 1 min 40, dossier complet en 5 min 20 ; OGG 4,7 Mo ; vidéo 1080p 115 Mo. L'encodage 1080p est
+l'étape la plus longue : pour aller plus vite, `--video-height 720 --video-preset veryfast`.
+
+## Releases
+
+Pousser un tag `vX.Y.Z` publie une release GitHub avec le binaire Linux (`.tar.gz` + sha256).
 
 ## Prérequis
 
-- [itg-charter](https://github.com/Alexis-benoist/itg-charter) compilé : dans le PATH,
-  dans `~/itg-charter/target/release/`, ou désigné par `ITG_CHARTER_BIN`.
+- [itg-charter](https://github.com/Alexis-benoist/itg-charter) compilé, avec les sous-commandes
+  `gen --banner …` et `decorate` : dans le PATH, dans `~/itg-charter/target/release/`, ou désigné
+  par `ITG_CHARTER_BIN`.
 - yt-dlp avec ses scripts de résolution YouTube et un runtime JavaScript (node ou deno) :
   `uv tool install "yt-dlp[default]"`.
 - ffmpeg avec libvorbis et libx264.
