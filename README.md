@@ -1,34 +1,34 @@
 # itg-yt
 
-Crée un dossier de chanson **ITGmania / In The Groove** complet à partir d'une vidéo YouTube :
-charts (via [itg-charter](https://github.com/Alexis-benoist/itg-charter)), audio OGG, bannière,
-fond, jaquette et clip en fond animé.
+Creates a complete **ITGmania / In The Groove** song folder from a YouTube video: charts (by
+[itg-charter](https://github.com/Alexis-benoist/itg-charter)), OGG audio, banner, background,
+jacket and the music video as a background movie.
 
 ```sh
 itg-yt "https://www.youtube.com/watch?v=..."
-itg-yt URL1 URL2 URL3                 # plusieurs chansons
-itg-yt "https://www.youtube.com/playlist?list=..."   # toute une playlist
-itg-yt -a mes-chansons.txt            # une URL par ligne (# = commentaire, - = stdin)
+itg-yt URL1 URL2 URL3                 # several songs
+itg-yt "https://www.youtube.com/playlist?list=..."   # a whole playlist
+itg-yt -a my-songs.txt                # one URL per line (# = comment, - = stdin)
 ```
 
-- [Installation](#installation) : itg-yt, ffmpeg, yt-dlp, Demucs, branchement sur le jeu
-- [Utilisation](#utilisation) · [Options](#options) · [Fonctionnement](#fonctionnement)
-- [Dépannage](#dépannage)
+- [Installation](#installation): itg-yt, ffmpeg, yt-dlp, Demucs, hooking into the game
+- [Usage](#usage) · [Options](#options) · [How it works](#how-it-works)
+- [Troubleshooting](#troubleshooting)
 
 ## Installation
 
-### Ce qu'il faut
+### What you need
 
-| outil | rôle | obligatoire ? |
+| tool | purpose | required? |
 |---|---|---|
-| **itg-yt** | ce programme (itg-charter est compilé dedans : rien d'autre à installer pour les charts) | oui |
-| **ffmpeg** avec libvorbis et libx264 | encodage de l'audio (OGG), des images et de la vidéo | oui |
-| **yt-dlp** avec ses scripts EJS | téléchargement depuis YouTube | oui |
-| **deno** ou **node** | runtime JavaScript demandé par yt-dlp pour résoudre les challenges YouTube | oui |
-| **Python 3.11 + Demucs** | sépare batterie / basse / voix pour mieux placer les notes | non (sans lui : avertissement, charts sur le mix seul) |
-| **GPU NVIDIA (CUDA)** | Demucs en ~20 s par morceau au lieu de quelques minutes | non (`--device cpu`) |
+| **itg-yt** | this program (itg-charter is built into it: nothing else to install for the charts) | yes |
+| **ffmpeg** with libvorbis and libx264 | encodes the audio (OGG), the images and the video | yes |
+| **yt-dlp** with its EJS scripts | downloads from YouTube | yes |
+| **deno** or **node** | JavaScript runtime yt-dlp needs to solve YouTube challenges | yes |
+| **Python 3.11 + Demucs** | separates drums / bass / vocals to place notes better | no (without it: a warning, charts from the full mix) |
+| **NVIDIA GPU (CUDA)** | Demucs in ~20 s per song instead of a few minutes | no (`--device cpu`) |
 
-Le plus simple pour yt-dlp et Demucs est [uv](https://docs.astral.sh/uv/) :
+The easiest way to install yt-dlp and Demucs is [uv](https://docs.astral.sh/uv/):
 
 ```sh
 # Linux / macOS
@@ -42,11 +42,11 @@ winget install astral-sh.uv
 
 ### 1. itg-yt
 
-**Binaire tout prêt** : sur la page
-[Releases](https://github.com/Alexis-benoist/itg-yt/releases) (dernière release = dernier
-commit de `main`), prendre l'archive de son système :
+**Prebuilt binary**: from the
+[Releases](https://github.com/Alexis-benoist/itg-yt/releases) page (latest release = latest commit
+on `main`), download the archive for your system:
 
-| système | archive |
+| system | archive |
 |---|---|
 | Linux x86_64 | `itg-yt-vX.Y.Z-linux-x86_64.tar.gz` |
 | macOS Apple Silicon (M1…) | `itg-yt-vX.Y.Z-macos-arm64.tar.gz` |
@@ -54,234 +54,227 @@ commit de `main`), prendre l'archive de son système :
 | Windows | `itg-yt-vX.Y.Z-windows-x86_64.zip` |
 
 ```sh
-# Linux / macOS : vérifier, extraire, mettre dans le PATH
-sha256sum -c itg-yt-vX.Y.Z-linux-x86_64.tar.gz.sha256   # macOS : shasum -a 256 -c …
+# Linux / macOS: verify, extract, put in the PATH
+sha256sum -c itg-yt-vX.Y.Z-linux-x86_64.tar.gz.sha256   # macOS: shasum -a 256 -c …
 tar xzf itg-yt-vX.Y.Z-linux-x86_64.tar.gz
 install -m 755 itg-yt-vX.Y.Z-linux-x86_64/itg-yt ~/.local/bin/
 ```
 
-Sur macOS, le binaire n'est pas signé : au premier lancement,
-`xattr -d com.apple.quarantine ~/.local/bin/itg-yt`. Sous Windows, extraire le `.zip` et mettre
-`itg-yt.exe` dans un dossier du `PATH` (ou le lancer depuis son dossier).
+On macOS the binary is not signed: before the first run,
+`xattr -d com.apple.quarantine ~/.local/bin/itg-yt`. On Windows, extract the `.zip` and put
+`itg-yt.exe` in a folder of the `PATH` (or run it from its folder).
 
-**Ou depuis les sources** : il faut Rust stable ([rustup](https://rustup.rs)) et un compilateur C,
-car itg-charter compile aubio :
+**Or from source**: you need stable Rust ([rustup](https://rustup.rs)) and a C compiler, since
+itg-charter compiles aubio:
 
-| système | compilateur C |
+| system | C compiler |
 |---|---|
 | Debian / Ubuntu | `sudo apt install build-essential` |
 | Fedora | `sudo dnf install gcc` |
 | macOS | `xcode-select --install` |
-| Windows | [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/), charge de travail « Développement Desktop en C++ » |
+| Windows | [Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/), "Desktop development with C++" workload |
 
 ```sh
 git clone https://github.com/Alexis-benoist/itg-yt
 cd itg-yt
-cargo install --path .        # installe itg-yt dans ~/.cargo/bin
+cargo install --path .        # installs itg-yt into ~/.cargo/bin
 ```
 
-Lancer la compilation **depuis le clone** : `.cargo/config.toml` y ajoute
-`CFLAGS=-D_DEFAULT_SOURCE`, sans quoi le C d'aubio ne compile pas avec GCC ≥ 14. (Un
-`cargo install --git …` lancé ailleurs ne lit pas ce fichier : il faut alors exporter `CFLAGS`
-soi-même.)
+Build **from the clone**: its `.cargo/config.toml` sets `CFLAGS=-D_DEFAULT_SOURCE`, without which
+aubio's C code does not compile with GCC ≥ 14. (A `cargo install --git …` run elsewhere does not
+read that file: export `CFLAGS` yourself in that case.)
 
 ### 2. ffmpeg
 
-| système | commande |
+| system | command |
 |---|---|
 | Debian / Ubuntu | `sudo apt install ffmpeg` |
-| Fedora | `sudo dnf install ffmpeg` (dépôt RPM Fusion ; le `ffmpeg-free` de base n'a pas libx264) |
+| Fedora | `sudo dnf install ffmpeg` (RPM Fusion repository; the stock `ffmpeg-free` lacks libx264) |
 | Arch | `sudo pacman -S ffmpeg` |
 | macOS | `brew install ffmpeg` |
-| Windows | `winget install Gyan.FFmpeg` (build complet) |
+| Windows | `winget install Gyan.FFmpeg` (full build) |
 
-Vérifier que les deux encodeurs sont là :
-
-```sh
-ffmpeg -hide_banner -encoders | grep -E "libvorbis|libx264"      # Windows : findstr au lieu de grep
-```
-
-### 3. yt-dlp et un runtime JavaScript
+Check that both encoders are there:
 
 ```sh
-uv tool install "yt-dlp[default]"     # [default] apporte les scripts EJS
+ffmpeg -hide_banner -encoders | grep -E "libvorbis|libx264"      # Windows: findstr instead of grep
 ```
 
-Puis un runtime JS, dont yt-dlp a besoin pour YouTube :
+### 3. yt-dlp and a JavaScript runtime
 
-| système | commande |
+```sh
+uv tool install "yt-dlp[default]"     # [default] brings the EJS scripts
+```
+
+Then a JavaScript runtime, which yt-dlp needs for YouTube:
+
+| system | command |
 |---|---|
-| Linux | deno : `curl -fsSL https://deno.land/install.sh \| sh` ; ou node : `sudo apt install nodejs` |
-| macOS | `brew install deno` (ou `brew install node`) |
-| Windows | `winget install DenoLand.Deno` (**deno** : la bascule automatique vers node ne marche pas sous Windows) |
+| Linux | deno: `curl -fsSL https://deno.land/install.sh \| sh`; or node: `sudo apt install nodejs` |
+| macOS | `brew install deno` (or `brew install node`) |
+| Windows | `winget install DenoLand.Deno` (or `winget install OpenJS.NodeJS.LTS`) |
 
-yt-dlp utilise deno par défaut ; si seul node est installé, itg-yt ajoute `--js-runtimes node`.
-itg-yt prend `~/.local/bin/yt-dlp` en priorité (là où uv l'installe), sinon celui du `PATH`.
+yt-dlp uses deno by default; when only node is installed, itg-yt passes `--js-runtimes node`.
+itg-yt prefers `~/.local/bin/yt-dlp` (where uv installs it), then the one in the `PATH`.
 
-YouTube change souvent de protection : **mettre yt-dlp à jour** au moindre échec de
-téléchargement :
+YouTube changes its protections often: **update yt-dlp** at the first download failure:
 
 ```sh
 uv tool upgrade yt-dlp
 ```
 
-### 4. Demucs (facultatif, recommandé)
+### 4. Demucs (optional, recommended)
 
-Les charts sont meilleurs quand la batterie et la basse sont séparées du reste. Sans Demucs, itg-yt
-fonctionne quand même : il affiche `warning: no stems (…); analysing the full mix only` et charte
-sur le mix complet (`--no-stems` fait de même, sans l'avertissement).
+Charts are better when the drums and bass are separated from the rest. Without Demucs, itg-yt still
+works: it prints `warning: no stems (…); analysing the full mix only` and charts the full mix
+(`--no-stems` does the same, without the warning).
 
-**Linux** (GPU NVIDIA : torch CUDA est installé par défaut) et **macOS** :
+**Linux** (NVIDIA GPU: torch with CUDA is installed by default) and **macOS**:
 
 ```sh
 uv venv --python 3.11 ~/.local/share/itg-charter/demucs-venv
 VIRTUAL_ENV=~/.local/share/itg-charter/demucs-venv uv pip install demucs torch torchaudio soundfile
 ```
 
-C'est l'emplacement où itg-yt cherche Demucs par défaut. Sans GPU NVIDIA (ce qui inclut tous les
-Mac), passer `--device cpu` : ça marche, mais c'est plusieurs fois plus lent.
+This is where itg-yt looks for Demucs by default. Without an NVIDIA GPU (which includes every Mac),
+pass `--device cpu`: it works, but several times slower.
 
-**Windows** (PowerShell) :
+**Windows** (PowerShell):
 
 ```powershell
 uv venv --python 3.11 $HOME\itg-charter\demucs-venv
 $env:VIRTUAL_ENV = "$HOME\itg-charter\demucs-venv"
-# GPU NVIDIA : torch CUDA ; sans GPU, retirer la ligne --index-url et utiliser --device cpu
+# NVIDIA GPU: torch with CUDA; without a GPU, drop the --index-url line and use --device cpu
 uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
 uv pip install demucs soundfile
 setx ITG_CHARTER_PYTHON "$HOME\itg-charter\demucs-venv\Scripts\python.exe"
 ```
 
-Pour un autre Python où Demucs est déjà installé : variable `ITG_CHARTER_PYTHON=/chemin/python`.
+For another Python where Demucs is already installed: `ITG_CHARTER_PYTHON=/path/to/python`.
 
-Le premier morceau télécharge les poids du modèle `htdemucs` (≈ 80 Mo). Les pistes séparées sont
-ensuite mises en cache (`~/.cache/itg-charter/stems/`) : relancer un morceau ne refait pas Demucs.
+The first song downloads the `htdemucs` model weights (≈ 80 MB). The separated tracks are then
+cached (`~/.cache/itg-charter/stems/`): running a song again does not rerun Demucs.
 
-### 5. Brancher le dossier de sortie sur le jeu (une fois)
+### 5. Hook the output folder into the game (once)
 
-itg-yt écrit dans `~/ITG-YouTube/`. Pour que le jeu le voie, on le relie au dossier `Songs`
-d'ITGmania, où il apparaît comme le pack « YouTube ». Le dossier `Songs` est :
+itg-yt writes to `~/ITG-YouTube/` (`%USERPROFILE%\ITG-YouTube` on Windows). For the game to see
+it, link it into ITGmania's `Songs` folder, where it shows up as the "YouTube" pack. The `Songs`
+folder is:
 
-| système | installation portable | installation normale |
+| system | portable install | regular install |
 |---|---|---|
-| Linux | `<dossier d'ITGmania>/Songs` | `~/.itgmania/Songs` |
-| macOS | `<dossier d'ITGmania>/Songs` | `~/Library/Application Support/ITGmania/Songs` |
-| Windows | `<dossier d'ITGmania>\Songs` | `%APPDATA%\ITGmania\Songs` |
+| Linux | `<ITGmania folder>/Songs` | `~/.itgmania/Songs` |
+| macOS | `<ITGmania folder>/Songs` | `~/Library/Application Support/ITGmania/Songs` |
+| Windows | `<ITGmania folder>\Songs` | `%APPDATA%\ITGmania\Songs` |
 
 ```sh
-# Linux / macOS (lien symbolique ; adapter le chemin de Songs)
+# Linux / macOS (symbolic link; adjust the Songs path)
 mkdir -p ~/ITG-YouTube
 ln -sfn ~/ITG-YouTube ~/.itgmania/Songs/YouTube
 ```
 
 ```bat
-:: Windows (cmd, jonction : pas besoin d'être administrateur ; adapter le chemin de Songs)
+:: Windows (cmd, junction: no administrator rights needed; adjust the Songs path)
 mkdir %USERPROFILE%\ITG-YouTube
 mklink /J "%APPDATA%\ITGmania\Songs\YouTube" "%USERPROFILE%\ITG-YouTube"
 ```
 
-Sous Windows, `HOME` n'est en général pas défini, et itg-yt en a besoin pour trouver
-`~/ITG-YouTube` et son cache. Le définir une fois : `setx HOME "%USERPROFILE%"` (puis ouvrir un
-nouveau terminal), ou passer `-o` et `--cache` à chaque lancement.
+Alternatively, on any system, write straight into the game with `-o <Songs>/YouTube`.
 
-Autre solution sur tous les systèmes : écrire directement dans le jeu avec
-`-o <Songs>/YouTube`.
-
-### Vérifier l'installation
+### Check the installation
 
 ```sh
 itg-yt --help
 yt-dlp --version
-itg-yt --no-video "https://www.youtube.com/watch?v=..."   # premier essai rapide, sans le clip
+itg-yt --no-video "https://www.youtube.com/watch?v=..."   # quick first try, without the video
 ```
 
-La dernière ligne affichée est le chemin du `.sm` créé. Relancer ITGmania (ou recharger les
-chansons) : la chanson est dans le pack « YouTube ».
+The last line printed is the path of the created `.sm`. Restart ITGmania (or reload songs): the
+song is in the "YouTube" pack.
 
-## Utilisation
+## Usage
 
-Une URL de vidéo avec `&list=…` (lecture depuis un mix ou une playlist) ne donne que cette
-vidéo. Une URL de playlist donne toutes ses vidéos.
+A video URL with `&list=…` (played from a mix or a playlist) gives only that video. A playlist URL
+gives all its videos.
 
-Le dossier `~/ITG-YouTube/<Titre>/` contient :
+The folder `~/ITG-YouTube/<Title>/` contains:
 
-| fichier | contenu |
+| file | content |
 |---|---|
-| `<Titre>.sm` | les charts, générés par [itg-charter](https://github.com/Alexis-benoist/itg-charter) (par défaut 5 charts de niveau 2, 4, 6, 8 et 10) |
-| `<Titre>.ogg` | l'audio en OGG Vorbis q5 (≈160 kb/s, transparent à l'oreille, 3 à 4 Mo) |
-| `<Titre>-bg.mp4` | le clip en fond animé, H.264 jusqu'à 1080p, 30 i/s, sans son |
-| `bn.png`, `bg.png`, `jacket.png` | bannière 418×164, fond 1920×1080 et jaquette 512×512 tirés de la miniature |
+| `<Title>.sm` | the charts, generated by [itg-charter](https://github.com/Alexis-benoist/itg-charter) (by default 5 charts of meter 2, 4, 6, 8 and 10) |
+| `<Title>.ogg` | the audio as OGG Vorbis q5 (≈160 kb/s, transparent, 3 to 4 MB) |
+| `<Title>-bg.mp4` | the music video as background movie, H.264 up to 1080p, 30 fps, no sound |
+| `bn.png`, `bg.png`, `jacket.png` | 418×164 banner, 1920×1080 background and 512×512 jacket made from the thumbnail |
 
 ## Options
 
-Charts :
-- `-p beginner` : niveaux 2, 3, 4, 5 ; `-p full` (défaut) : niveaux 2, 4, 6, 8, 10 ;
-- `-m 2-5` ou `-m 1,3,6` : niveaux choisis sur l'échelle ITGmania 1-10 (5 au plus) ;
-- `-d easy,hard` : à la place des niveaux, des cases de difficulté (beginner, easy, medium, hard,
-  challenge ou `all`) avec la densité typique des charts humains de chaque case ;
-- `-s 42` : seed (défaut 0 ; même vidéo + même seed ⇒ mêmes charts) ;
-- `--no-stems` (sans Demucs, plus rapide), `--device cpu`.
+Charts:
+- `-p beginner`: meters 2, 3, 4, 5; `-p full` (default): meters 2, 4, 6, 8, 10;
+- `-m 2-5` or `-m 1,3,6`: chosen meters on the ITGmania 1-10 scale (at most 5);
+- `-d easy,hard`: instead of meters, difficulty slots (beginner, easy, medium, hard, challenge or
+  `all`) with the typical density of human charts of each slot;
+- `-s 42`: seed (default 0; same video + same seed ⇒ same charts);
+- `--no-stems` (no Demucs, faster), `--device cpu`.
 
-Général : `-o DIR`, `--no-video`, `--title`, `--artist` (une seule vidéo), `--cache DIR`.
+General: `-o DIR`, `--no-video`, `--title`, `--artist` (single video only), `--cache DIR`.
 
-Plusieurs chansons :
-- `--jobs 2` (défaut) : chansons téléchargées et encodées en même temps. Les charts (Demucs sur
-  le GPU) passent une chanson à la fois, pendant que les suivantes se préparent ;
-- une chanson en échec n'arrête pas les autres ; un résumé est affiché à la fin, les chemins des
-  `.sm` réussis sont écrits sur la sortie standard, et le code de retour vaut 1 s'il y a eu un
-  échec.
+Several songs:
+- `--jobs 2` (default): songs downloaded and encoded at the same time. Charts (Demucs on the GPU)
+  are made one song at a time, while the next songs are being prepared;
+- a failed song does not stop the others; a summary is printed at the end, the paths of the
+  successful `.sm` files are written to standard output, and the exit code is 1 if anything failed.
 
-Fiabilité : yt-dlp relance lui-même les erreurs réseau (`--retries`, `--fragment-retries`,
-`--extractor-retries`). Si un appel échoue quand même (plantage, extraction ratée), itg-yt le
-relance jusqu'à `--yt-retries 3` fois, après 2 s, 4 s puis 8 s. Pour les métadonnées, l'appel
-groupé est refait et les résultats sont fusionnés.
+Reliability: yt-dlp retries network errors itself (`--retries`, `--fragment-retries`,
+`--extractor-retries`). If a call still fails (crash, failed extraction), itg-yt reruns it up to
+`--yt-retries 3` times, after 2 s, 4 s then 8 s. For the metadata, the grouped call is redone and
+the results are merged.
 
-Vidéo de fond :
-- `--video-height 720` : hauteur maximale (défaut 1080 ; jamais d'agrandissement) ;
-- `--video-preset veryfast` : vitesse de x264 (défaut `medium`) ;
-- `--video-crf 26` : qualité (plus bas = meilleure et plus grosse).
+Background video:
+- `--video-height 720`: maximum height (default 1080; never upscaled);
+- `--video-preset veryfast`: x264 speed (default `medium`);
+- `--video-crf 26`: quality (lower = better and bigger).
 
-Mesuré sur « Yeah! » d'Usher (4 min 10, 12 cœurs, GTX 1650, réglages par défaut) : charts prêts
-en 1 min 40, dossier complet en 5 min 20 ; OGG 4,7 Mo ; vidéo 1080p 115 Mo. L'encodage 1080p est
-l'étape la plus longue : pour aller plus vite, `--video-height 720 --video-preset veryfast`.
+Measured on Usher's "Yeah!" (4 min 10 s, 12 cores, GTX 1650, default settings): charts ready in
+1 min 40 s, complete folder in 5 min 20 s; OGG 4.7 MB; 1080p video 115 MB. The 1080p encode is the
+longest step: for speed, `--video-height 720 --video-preset veryfast`.
 
-Variables d'environnement : `ITG_YT_DLP` et `ITG_FFMPEG` (autre yt-dlp / ffmpeg),
-`ITG_CHARTER_PYTHON` (Python avec Demucs).
+Environment variables: `ITG_YT_DLP` and `ITG_FFMPEG` (another yt-dlp / ffmpeg),
+`ITG_CHARTER_PYTHON` (Python with Demucs).
 
-## Fonctionnement
+## How it works
 
-1. Métadonnées de **toutes les URL en un seul appel** `yt-dlp -j` (les challenges YouTube ne sont
-   résolus qu'une fois ; doublons retirés). Titre et artiste viennent des champs musicaux de
-   YouTube (`track`, `artists`) quand ils existent, sinon du titre nettoyé (« Artiste - Titre
-   (Official Video) [4K] » → « Titre » / « Artiste »).
-2. Téléchargement **en parallèle** de l'audio, de la vidéo (≤ 1080p) et de la miniature, dans un
-   cache (`~/.cache/itg-charter/youtube/<id>/`) : relancer ne retélécharge rien.
-3. Encodages ffmpeg **en parallèle** (audio, images, et vidéo en priorité basse), eux aussi mis en
-   cache : relancer (autre seed, autres difficultés) ne réencode rien, et changer la qualité de la
-   vidéo ne réencode que la vidéo.
-4. Dès que l'OGG et les images sont prêts, itg-charter (compilé dans itg-yt) crée le dossier et
-   génère les charts sur l'OGG, celui que le jeu lira, pendant que la vidéo s'encode encore.
-5. itg-charter ajoute ensuite la vidéo de fond au `.sm` (`#BGCHANGES`, calée pour démarrer au
-   début de l'audio).
+1. Metadata of **all URLs in a single** `yt-dlp -j` call (YouTube challenges are solved only once;
+   duplicates removed). Title and artist come from YouTube's music fields (`track`, `artists`) when
+   present, otherwise from the cleaned-up title ("Artist - Title (Official Video) [4K]" →
+   "Title" / "Artist").
+2. Audio, video (≤ 1080p) and thumbnail are downloaded **in parallel** into a cache
+   (`~/.cache/itg-charter/youtube/<id>/`): running again downloads nothing.
+3. ffmpeg encodes **in parallel** (audio, images, and the video at low priority), also cached:
+   running again (another seed, other difficulties) re-encodes nothing, and changing the video
+   quality only re-encodes the video.
+4. As soon as the OGG and the images are ready, itg-charter (built into itg-yt) creates the folder
+   and generates the charts from the OGG, the very file the game will play, while the video is
+   still encoding.
+5. itg-charter then adds the background video to the `.sm` (`#BGCHANGES`, timed to start with the
+   audio).
 
-## Dépannage
+## Troubleshooting
 
-| symptôme | solution |
+| symptom | fix |
 |---|---|
-| `warning: no stems (Demucs python not found at …)` | pas bloquant (charts sur le mix seul) ; pour avoir les stems : étape 4 ou `ITG_CHARTER_PYTHON` ; pour le faire taire : `--no-stems` |
-| erreur yt-dlp : `Sign in to confirm…`, `n challenge`, `Requested format is not available` | `uv tool upgrade yt-dlp`, vérifier qu'il a été installé avec `[default]` et que deno ou node est dans le `PATH` |
-| `Unknown encoder 'libx264'` ou `'libvorbis'` | ffmpeg incomplet : prendre un build complet (étape 2) |
-| `CUDA out of memory` | `--device cpu` (ou fermer ce qui occupe le GPU) |
-| compilation : `implicit declaration of function 'strncasecmp'` | compiler depuis le clone (voir `.cargo/config.toml`) ou `export CFLAGS=-D_DEFAULT_SOURCE` |
-| la chanson n'apparaît pas dans le jeu | vérifier le lien de l'étape 5, puis recharger les chansons ou relancer ITGmania |
-| Windows : fichiers créés dans le dossier courant | `HOME` non défini : `setx HOME "%USERPROFILE%"` (étape 5) |
+| `warning: no stems (Demucs python not found at …)` | not blocking (charts from the full mix); to get stems: step 4 or `ITG_CHARTER_PYTHON`; to silence it: `--no-stems` |
+| yt-dlp error: `Sign in to confirm…`, `n challenge`, `Requested format is not available` | `uv tool upgrade yt-dlp`, check it was installed with `[default]` and that deno or node is in the `PATH` |
+| `Unknown encoder 'libx264'` or `'libvorbis'` | incomplete ffmpeg: get a full build (step 2) |
+| `CUDA out of memory` | `--device cpu` (or close whatever is using the GPU) |
+| build: `implicit declaration of function 'strncasecmp'` | build from the clone (see `.cargo/config.toml`) or `export CFLAGS=-D_DEFAULT_SOURCE` |
+| the song does not show up in the game | check the link from step 5, then reload songs or restart ITGmania |
 
 ## Releases
 
-Chaque push sur `main` publie automatiquement une release GitHub `vX.Y.<n° de build>` avec les
-binaires Linux x86_64, macOS (arm64, x86_64) et Windows x86_64 (quand ils compilent), en
-`.tar.gz`/`.zip` + sha256. Pousser un tag `vX.Y.Z` publie aussi une release sous ce nom.
+Every push to `main` automatically publishes a GitHub release `vX.Y.<build number>` with binaries
+for Linux x86_64, macOS (arm64, x86_64) and Windows x86_64 (when they build), as `.tar.gz`/`.zip`
++ sha256. Pushing a `vX.Y.Z` tag also publishes a release under that name.
 
-## Licence
+## License
 
-GPL-3.0, comme itg-charter.
+GPL-3.0, like itg-charter.
