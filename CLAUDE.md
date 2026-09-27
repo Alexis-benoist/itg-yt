@@ -23,6 +23,13 @@ tags, `#BGCHANGES`) appartient à itg-charter (`gen --banner/--background/--jack
 
 - **Valeurs par défaut complètes** : 5 difficultés, Demucs et vidéo de fond activés ; les options
   servent à retirer (`--no-video`, `--no-stems`, `-d`), pas à ajouter.
+- **Plusieurs URL** : métadonnées en un seul `yt-dlp -j --ignore-errors` (playlists développées,
+  `--no-playlist` garde une vidéo pour `watch?v=…&list=…`), doublons retirés par id. Pool de
+  `--jobs` workers ; `itg-charter gen` est protégé par un mutex (un seul Demucs sur le GPU). Une
+  chanson en échec n'arrête pas les autres ; code de retour 1 s'il y a eu un échec.
+- **Relances** : options de relance internes de yt-dlp + `run_with_retries` (processus relancé
+  jusqu'à `--yt-retries`, pauses 2/4/8 s ; `ITG_YT_RETRY_PAUSE_MS` pour les tests) ; l'appel de
+  métadonnées est refait tant qu'il reste des erreurs.
 - **Parallélisme** : téléchargements simultanés ; encodages simultanés ; `gen` démarre dès que
   l'OGG et les images existent ; la vidéo (x264, long) tourne en `nice` et n'est attendue que pour
   `decorate`.

@@ -96,9 +96,15 @@ impl Env {
             "1",
             &s("thumb.jpg"),
         ]);
+        // Metadata served by the fake yt-dlp, per video id ("broken" has none).
         std::fs::write(
-            src.join("info.json"),
-            r#"{"id":"abc123","title":"Some Artist - Great Song (Official Video) [4K]","uploader":"SomeArtistVEVO"}"#,
+            src.join("info-abc123.json"),
+            r#"{"id":"abc123","title":"Some Artist - Great Song (Official Video) [4K]","uploader":"SomeArtistVEVO","webpage_url":"https://www.youtube.com/watch?v=abc123"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("info-def456.json"),
+            r#"{"id":"def456","title":"Whatever (Official Audio)","track":"Second Song","artists":["Band A","Band B"],"uploader":"Label","webpage_url":"https://www.youtube.com/watch?v=def456"}"#,
         )
         .unwrap();
         // Fake yt-dlp: -J prints metadata; otherwise copies the requested media to the
@@ -109,8 +115,23 @@ impl Env {
                 r#"#!/bin/sh
 SRC='{src}'
 out=""; fmt=""; thumb=0; prev=""
+case " $* " in *" -j "*)
+  for a in "$@"; do
+    case "$a" in http*)
+      id=$(echo "$a" | sed -n 's/.*v=\([^&]*\).*/\1/p')
+      if [ "$(cat "$SRC/flaky-meta" 2>/dev/null)" = "$id" ]; then
+        rm "$SRC/flaky-meta"; echo "ERROR: [youtube] $id: temporary failure" >&2
+      elif [ -f "$SRC/info-$id.json" ]; then cat "$SRC/info-$id.json"; echo
+      else echo "ERROR: [youtube] $id: Video unavailable" >&2; fi;;
+    esac
+  done
+  exit 0;;
+esac
+# Simulated crashes: the first N downloads fail.
+n=$(cat "$SRC/flaky-downloads" 2>/dev/null || echo 0)
+if [ "$n" -gt 0 ]; then echo $((n - 1)) > "$SRC/flaky-downloads"; echo "ERROR: simulated crash" >&2; exit 1; fi
 for a in "$@"; do
-  case "$a" in -J) cat "$SRC/info.json"; exit 0;; --write-thumbnail) thumb=1;; esac
+  case "$a" in --write-thumbnail) thumb=1;; esac
   [ "$prev" = "-o" ] && out="$a"
   [ "$prev" = "-f" ] && fmt="$a"
   prev="$a"
@@ -141,6 +162,9 @@ cp "$SRC/$f" "$(echo "$out" | sed "s/%(ext)s/$ext/")"
 echo "$@" >> '{src}/charter-calls.txt'
 cmd="$1"; shift
 if [ "$cmd" = gen ]; then
+  # Two charts at the same time would mean two Demucs runs on the GPU.
+  if [ -e '{src}/gen.lock' ]; then echo OVERLAP >> '{src}/charter-calls.txt'; fi
+  touch '{src}/gen.lock'; sleep 0.3; rm -f '{src}/gen.lock'
   audio="$1"; shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -171,9 +195,16 @@ fi
         Env { root }
     }
 
-    fn run_with(&self, charter: &Path, out: &str, extra: &[&str]) -> PathBuf {
-        let o = Command::new(env!("CARGO_BIN_EXE_itg-yt"))
-            .arg("https://www.youtube.com/watch?v=abc123&list=RDxyz&index=3")
+    /// Runs itg-yt on `urls` (no check of the exit status).
+    fn run_urls(
+        &self,
+        charter: &Path,
+        urls: &[&str],
+        out: &str,
+        extra: &[&str],
+    ) -> std::process::Output {
+        Command::new(env!("CARGO_BIN_EXE_itg-yt"))
+            .args(urls)
             .arg("-o")
             .arg(self.root.join(out))
             .arg("--cache")
@@ -182,8 +213,18 @@ fi
             .env("ITG_YT_DLP", self.root.join("yt-dlp"))
             .env("ITG_FFMPEG", self.root.join("ffmpeg"))
             .env("ITG_CHARTER_BIN", charter)
+            .env("ITG_YT_RETRY_PAUSE_MS", "10")
             .output()
-            .unwrap();
+            .unwrap()
+    }
+
+    fn run_with(&self, charter: &Path, out: &str, extra: &[&str]) -> PathBuf {
+        let o = self.run_urls(
+            charter,
+            &["https://www.youtube.com/watch?v=abc123&list=RDxyz&index=3"],
+            out,
+            extra,
+        );
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         PathBuf::from(String::from_utf8(o.stdout).unwrap().trim())
     }
@@ -412,4 +453,162 @@ fn with_the_real_itg_charter() {
         "{text}"
     );
     assert_eq!(text.matches("#NOTES:").count(), 2);
+}
+
+#[test]
+fn several_urls_are_processed_and_failures_reported() {
+    if !has("ffmpeg") || !has("ffprobe") {
+        return;
+    }
+    let env = Env::new("multi");
+    let urls = [
+        "https://www.youtube.com/watch?v=abc123",
+        "https://www.youtube.com/watch?v=def456",
+        "https://www.youtube.com/watch?v=broken",
+        // duplicate of the first one: processed once
+        "https://www.youtube.com/watch?v=abc123&list=RDxyz",
+    ];
+    let mut extra = FAST.to_vec();
+    extra.extend(["--jobs", "3"]);
+    let o = env.run_urls(&env.root.join("itg-charter"), &urls, "songs", &extra);
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success(), "a missing video makes the run fail");
+    assert!(stderr.contains("broken: Video unavailable"), "{stderr}");
+    assert!(stderr.contains("2 song(s) ready, 1 failed"), "{stderr}");
+
+    // Both songs are complete; stdout lists their simfiles in URL order.
+    let sms: Vec<String> = String::from_utf8(o.stdout)
+        .unwrap()
+        .lines()
+        .map(String::from)
+        .collect();
+    let songs = env.root.join("songs");
+    assert_eq!(
+        sms,
+        [
+            songs
+                .join("Great Song/Great Song.sm")
+                .to_string_lossy()
+                .into_owned(),
+            songs
+                .join("Second Song/Second Song.sm")
+                .to_string_lossy()
+                .into_owned(),
+        ]
+    );
+    for dir in ["Great Song", "Second Song"] {
+        let text = std::fs::read_to_string(songs.join(dir).join(format!("{dir}.sm"))).unwrap();
+        assert!(
+            text.contains(&format!("#BGCHANGES:{dir}-bg.mp4;")),
+            "{text}"
+        );
+    }
+
+    // yt-dlp music metadata: track + list of artists.
+    let calls = env.file("charter-calls.txt");
+    assert!(
+        calls.contains("--title Second Song --artist Band A, Band B"),
+        "{calls}"
+    );
+    // Charts never ran at the same time (GPU), even with 3 jobs.
+    assert!(!calls.contains("OVERLAP"), "{calls}");
+    assert_eq!(calls.lines().filter(|l| l.starts_with("gen ")).count(), 2);
+    assert_eq!(
+        env.file("downloads.log").lines().count(),
+        6,
+        "3 files per song, once"
+    );
+}
+
+#[test]
+fn urls_from_a_batch_file() {
+    if !has("ffmpeg") || !has("ffprobe") {
+        return;
+    }
+    let env = Env::new("batch");
+    let list = env.root.join("urls.txt");
+    std::fs::write(
+        &list,
+        "# my songs\nhttps://www.youtube.com/watch?v=def456\n\n  https://www.youtube.com/watch?v=abc123  \n",
+    )
+    .unwrap();
+    let mut extra = FAST.to_vec();
+    extra.extend(["--no-video", "-a", list.to_str().unwrap()]);
+    let o = env.run_urls(&env.root.join("itg-charter"), &[], "songs", &extra);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = String::from_utf8(o.stdout).unwrap();
+    assert_eq!(out.lines().count(), 2, "{out}");
+    assert!(
+        out.lines().next().unwrap().ends_with("Second Song.sm"),
+        "file order is kept"
+    );
+}
+
+#[test]
+fn title_override_needs_a_single_video() {
+    if !has("ffmpeg") || !has("ffprobe") {
+        return;
+    }
+    let env = Env::new("override");
+    let urls = [
+        "https://www.youtube.com/watch?v=abc123",
+        "https://www.youtube.com/watch?v=def456",
+    ];
+    let o = env.run_urls(
+        &env.root.join("itg-charter"),
+        &urls,
+        "songs",
+        &["--title", "X"],
+    );
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("only make sense with a single video"));
+}
+
+#[test]
+fn yt_dlp_failures_are_retried() {
+    if !has("ffmpeg") || !has("ffprobe") {
+        return;
+    }
+    let env = Env::new("retry");
+    let src = env.root.join("src");
+    // def456's metadata fails once, and the first two downloads crash.
+    std::fs::write(src.join("flaky-meta"), "def456").unwrap();
+    std::fs::write(src.join("flaky-downloads"), "2").unwrap();
+    let urls = [
+        "https://www.youtube.com/watch?v=abc123",
+        "https://www.youtube.com/watch?v=def456",
+    ];
+    let mut extra = FAST.to_vec();
+    extra.extend(["--no-video", "--jobs", "1"]);
+    let o = env.run_urls(&env.root.join("itg-charter"), &urls, "songs", &extra);
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(o.status.success(), "{stderr}");
+    assert!(stderr.contains("1 URL(s) failed, retry 1/3"), "{stderr}");
+    assert!(stderr.contains("download failed, retry 1/3"), "{stderr}");
+    assert!(stderr.contains("download failed, retry 2/3"), "{stderr}");
+    assert_eq!(String::from_utf8(o.stdout).unwrap().lines().count(), 2);
+}
+
+#[test]
+fn retries_are_bounded() {
+    if !has("ffmpeg") || !has("ffprobe") {
+        return;
+    }
+    let env = Env::new("retry-bounded");
+    std::fs::write(env.root.join("src/flaky-downloads"), "100").unwrap();
+    let mut extra = FAST.to_vec();
+    extra.extend(["--no-video", "--yt-retries", "2"]);
+    let o = env.run_urls(
+        &env.root.join("itg-charter"),
+        &["https://www.youtube.com/watch?v=abc123"],
+        "songs",
+        &extra,
+    );
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success());
+    assert!(
+        stderr.contains("retry 2/2") && !stderr.contains("retry 3/"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("0 song(s) ready, 1 failed"), "{stderr}");
 }

@@ -19,7 +19,7 @@ use clap::Parser;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(
@@ -27,8 +27,19 @@ use std::time::Instant;
     about = "Creates an ITGmania song folder (charts, audio, visuals, background video) from a YouTube URL"
 )]
 struct Args {
-    /// YouTube video URL.
-    url: String,
+    /// YouTube URLs: videos, or playlists (a video URL with `&list=` stays one video).
+    #[arg(required_unless_present = "batch_file")]
+    urls: Vec<String>,
+    /// File with one URL per line ("-" = stdin; blank lines and "#" comments ignored).
+    #[arg(short = 'a', long)]
+    batch_file: Option<PathBuf>,
+    /// Songs downloaded and encoded at the same time. Charts are generated one song at a
+    /// time (Demucs uses the GPU) while the next songs are being prepared.
+    #[arg(short, long, default_value_t = 2)]
+    jobs: usize,
+    /// How many times a failed yt-dlp call is retried (pause of 2 s, 4 s, 8 s…).
+    #[arg(long, default_value_t = 3)]
+    yt_retries: u32,
     /// Difficulties, comma separated: beginner,easy,medium,hard,challenge or "all".
     #[arg(short, long, default_value = "all")]
     difficulties: String,
@@ -48,10 +59,10 @@ struct Args {
     /// Torch device for Demucs (cuda or cpu).
     #[arg(long)]
     device: Option<String>,
-    /// Song title (default: from the YouTube metadata).
+    /// Song title (default: from the YouTube metadata; only with a single video).
     #[arg(long)]
     title: Option<String>,
-    /// Artist (default: from the YouTube metadata).
+    /// Artist (default: from the YouTube metadata; only with a single video).
     #[arg(long)]
     artist: Option<String>,
     /// Maximum height of the background video in pixels (never upscaled). Lower is
@@ -70,16 +81,28 @@ struct Args {
     cache: Option<PathBuf>,
 }
 
-/// The fields of `yt-dlp -J` we use.
-#[derive(Deserialize, Debug, Default)]
+/// The fields of `yt-dlp -j` we use (one JSON object per video).
+#[derive(Deserialize, Debug, Default, Clone)]
 struct Info {
     id: String,
     title: String,
+    /// Canonical URL of the video (playlist URLs are resolved to their videos).
+    webpage_url: Option<String>,
+    /// Music metadata, filled by YouTube for many music videos.
     track: Option<String>,
+    artists: Option<Vec<String>>,
     artist: Option<String>,
     creator: Option<String>,
     uploader: Option<String>,
     channel: Option<String>,
+}
+
+impl Info {
+    fn url(&self) -> String {
+        self.webpage_url
+            .clone()
+            .unwrap_or_else(|| format!("https://www.youtube.com/watch?v={}", self.id))
+    }
 }
 
 fn home() -> PathBuf {
@@ -183,15 +206,68 @@ impl Encode {
 }
 
 /// yt-dlp command with the options shared by every call.
-fn yt_dlp_cmd(url: &str) -> Command {
+fn yt_dlp_base() -> Command {
     let mut c = Command::new(yt_dlp());
     c.args(["--no-playlist", "--no-progress", "--quiet", "--no-warnings"]);
+    // yt-dlp's own retries, for network errors inside one call.
+    c.args([
+        "--retries",
+        "10",
+        "--fragment-retries",
+        "10",
+        "--extractor-retries",
+        "3",
+    ]);
     // YouTube needs a JavaScript runtime; yt-dlp only enables deno by default.
     if !in_path("deno") && in_path("node") {
         c.args(["--js-runtimes", "node"]);
     }
+    c
+}
+
+/// yt-dlp command for one video.
+fn yt_dlp_cmd(url: &str) -> Command {
+    let mut c = yt_dlp_base();
     c.arg(url);
     c
+}
+
+/// Pause before retry number `attempt` (1-based): 2 s, 4 s, 8 s…
+/// (`ITG_YT_RETRY_PAUSE_MS` sets the first pause, for tests).
+fn retry_pause(attempt: u32) -> Duration {
+    let first = std::env::var("ITG_YT_RETRY_PAUSE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2000u64);
+    Duration::from_millis(first << (attempt - 1).min(6))
+}
+
+/// Runs a command built by `make`, retrying up to `retries` times when it fails
+/// (yt-dlp sometimes crashes or fails to extract a video, then works on a new try).
+fn run_with_retries(
+    what: &str,
+    retries: u32,
+    make: impl Fn() -> Command,
+    log: impl Fn(&str),
+) -> Result<Output> {
+    let mut attempt = 0;
+    loop {
+        match Job::spawn(what, &mut make()).and_then(Job::wait) {
+            Ok(out) => return Ok(out),
+            Err(e) if attempt < retries => {
+                attempt += 1;
+                let pause = retry_pause(attempt);
+                let reason = e.to_string();
+                log(&format!(
+                    "{what} failed, retry {attempt}/{retries} in {:.0}s ({})",
+                    pause.as_secs_f64(),
+                    reason.lines().last().unwrap_or_default()
+                ));
+                std::thread::sleep(pause);
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// First non-partial file of the cache folder whose name starts with `stem.`.
@@ -255,9 +331,13 @@ fn clean_title(s: &str) -> String {
 
 /// (title, artist) from the YouTube metadata.
 fn song_names(info: &Info) -> (String, String) {
-    let uploader = info
-        .artist
-        .clone()
+    let artists = info
+        .artists
+        .as_ref()
+        .filter(|a| !a.is_empty())
+        .map(|a| a.join(", "));
+    let uploader = artists
+        .or(info.artist.clone())
         .or(info.creator.clone())
         .or(info.channel.clone())
         .or(info.uploader.clone())
@@ -324,29 +404,95 @@ fn image_encode(thumb: &Path, out: PathBuf, w: u32, h: u32) -> Result<Encode> {
     Encode::start(&format!("image {w}x{h}"), cmd, out)
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
-    let t0 = Instant::now();
-    let step = |msg: &str| eprintln!("[{:>6.1}s] {msg}", t0.elapsed().as_secs_f64());
-    let cache_root = args
-        .cache
-        .clone()
-        .unwrap_or_else(|| home().join(".cache/itg-charter/youtube"));
-    let output = args
-        .output
-        .clone()
-        .unwrap_or_else(|| home().join("ITG-YouTube"));
+/// Everything shared by the songs of one run.
+struct Ctx {
+    args: Args,
+    cache_root: PathBuf,
+    output: PathBuf,
+    t0: Instant,
+    /// Held while `itg-charter gen` runs: Demucs on a 4 GB GPU, one song at a time.
+    charting: std::sync::Mutex<()>,
+}
 
-    // Metadata.
-    step("reading video metadata");
-    let meta = Job::spawn("yt-dlp metadata", yt_dlp_cmd(&args.url).arg("-J"))?.wait()?;
-    let info: Info = serde_json::from_slice(&meta.stdout).context("parsing yt-dlp metadata")?;
-    let cache = cache_root.join(file_stem(&info.id));
+impl Ctx {
+    fn log(&self, song: &str, msg: &str) {
+        eprintln!("[{:>6.1}s] {song}: {msg}", self.t0.elapsed().as_secs_f64());
+    }
+}
+
+/// All URLs of the run: arguments, then the batch file (if any), in order.
+fn collect_urls(args: &Args) -> Result<Vec<String>> {
+    let mut urls = args.urls.clone();
+    if let Some(file) = &args.batch_file {
+        let text = if file.as_os_str() == "-" {
+            std::io::read_to_string(std::io::stdin())?
+        } else {
+            std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?
+        };
+        urls.extend(
+            text.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(String::from),
+        );
+    }
+    anyhow::ensure!(!urls.is_empty(), "no URL given");
+    Ok(urls)
+}
+
+/// Metadata of every video with a single yt-dlp call (`-j`: one JSON line per video;
+/// playlists are expanded, a `watch?v=…&list=…` URL stays one video). Unavailable
+/// videos are reported and skipped; duplicates are removed, order is kept. When some
+/// URLs fail, the call is repeated (up to `retries` times) and the results merged.
+fn fetch_infos(
+    urls: &[String],
+    retries: u32,
+    log: impl Fn(&str),
+) -> Result<(Vec<Info>, Vec<String>)> {
+    let mut infos: Vec<Info> = Vec::new();
+    let mut attempt = 0;
+    loop {
+        let mut cmd = yt_dlp_base();
+        cmd.args(["-j", "--ignore-errors"]).args(urls);
+        let out = cmd
+            .stdin(Stdio::null())
+            .output()
+            .context("cannot start yt-dlp")?;
+        for line in String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+        {
+            let info: Info = serde_json::from_str(line).context("parsing yt-dlp metadata")?;
+            if !infos.iter().any(|i| i.id == info.id) {
+                infos.push(info);
+            }
+        }
+        let errors: Vec<String> = String::from_utf8_lossy(&out.stderr)
+            .lines()
+            .filter(|l| l.starts_with("ERROR"))
+            .map(String::from)
+            .collect();
+        if errors.is_empty() || attempt >= retries {
+            return Ok((infos, errors));
+        }
+        attempt += 1;
+        let pause = retry_pause(attempt);
+        log(&format!(
+            "{} URL(s) failed, retry {attempt}/{retries} in {:.0}s",
+            errors.len(),
+            pause.as_secs_f64()
+        ));
+        std::thread::sleep(pause);
+    }
+}
+
+/// Downloads, encodes and charts one song; returns its `.sm`.
+fn process(ctx: &Ctx, info: &Info, title: &str, artist: &str) -> Result<PathBuf> {
+    let args = &ctx.args;
+    let url = info.url();
+    let log = |msg: &str| ctx.log(title, msg);
+    let cache = ctx.cache_root.join(file_stem(&info.id));
     std::fs::create_dir_all(&cache)?;
-    let (auto_title, auto_artist) = song_names(&info);
-    let title = args.title.clone().unwrap_or(auto_title);
-    let artist = args.artist.clone().unwrap_or(auto_artist);
-    step(&format!("\"{title}\" by \"{artist}\" ({})", info.id));
 
     // Downloads, in parallel.
     let template = |stem: &str| {
@@ -355,49 +501,70 @@ fn main() -> Result<()> {
             .to_string_lossy()
             .into_owned()
     };
-    let mut downloads = Vec::new();
+    let video_format = format!(
+        "bestvideo[height<={h}][vcodec^=avc1]/bestvideo[height<={h}]/best[height<={h}]",
+        h = args.video_height
+    );
+    let mut downloads: Vec<(&str, Vec<String>)> = Vec::new();
     if cached(&cache, "audio").is_none() {
-        downloads.push(Job::spawn(
+        downloads.push((
             "audio download",
-            yt_dlp_cmd(&args.url).args(["-f", "bestaudio/best", "-o", &template("audio")]),
-        )?);
+            vec![
+                "-f".into(),
+                "bestaudio/best".into(),
+                "-o".into(),
+                template("audio"),
+            ],
+        ));
     }
     if !args.no_video && cached(&cache, "video").is_none() {
-        downloads.push(Job::spawn(
+        downloads.push((
             "video download",
-            yt_dlp_cmd(&args.url).args([
-                "-f",
-                &format!(
-                    "bestvideo[height<={h}][vcodec^=avc1]/bestvideo[height<={h}]/best[height<={h}]",
-                    h = args.video_height
-                ),
-                "-o",
-                &template("video"),
-            ]),
-        )?);
+            vec!["-f".into(), video_format, "-o".into(), template("video")],
+        ));
     }
     if cached(&cache, "thumb").is_none() {
-        downloads.push(Job::spawn(
+        downloads.push((
             "thumbnail download",
-            yt_dlp_cmd(&args.url).args([
-                "--skip-download",
-                "--write-thumbnail",
-                "--convert-thumbnails",
-                "jpg",
-                "-o",
-                &template("thumb"),
-            ]),
-        )?);
+            vec![
+                "--skip-download".into(),
+                "--write-thumbnail".into(),
+                "--convert-thumbnails".into(),
+                "jpg".into(),
+                "-o".into(),
+                template("thumb"),
+            ],
+        ));
     }
     if !downloads.is_empty() {
-        step(&format!(
+        log(&format!(
             "downloading ({} files in parallel)",
             downloads.len()
         ));
     }
-    for d in downloads {
-        d.wait()?;
-    }
+    std::thread::scope(|s| {
+        let handles: Vec<_> = downloads
+            .iter()
+            .map(|(what, extra)| {
+                let url = &url;
+                s.spawn(move || {
+                    run_with_retries(
+                        what,
+                        args.yt_retries,
+                        || {
+                            let mut c = yt_dlp_cmd(url);
+                            c.args(extra);
+                            c
+                        },
+                        log,
+                    )
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .try_for_each(|h| h.join().expect("download thread").map(|_| ()))
+    })?;
     let audio_src = cached(&cache, "audio").context("audio was not downloaded")?;
     let thumb = cached(&cache, "thumb").context("thumbnail was not downloaded")?;
     let video_src = if args.no_video {
@@ -408,10 +575,10 @@ fn main() -> Result<()> {
 
     // Encodes into the cache, in parallel. Files already encoded are reused (the video
     // per height / preset / quality).
-    let stem = file_stem(&title);
+    let stem = file_stem(title);
     let encoded = cache.join("encoded");
     std::fs::create_dir_all(&encoded)?;
-    step("encoding audio, images and video in parallel");
+    log("encoding audio, images and video in parallel");
     let mut audio_cmd = ffmpeg_cmd();
     audio_cmd.arg("-i").arg(&audio_src).args([
         "-vn",
@@ -480,16 +647,15 @@ fn main() -> Result<()> {
     let [banner, background, jacket] = images.map(Encode::wait);
     let (banner, background, jacket) = (banner?, background?, jacket?);
 
-    // Song folder and charts, while the video keeps encoding.
-    step("audio and images ready, generating charts (video still encoding)");
+    // Song folder and charts (one song at a time), while the video keeps encoding.
     let mut charter = Command::new(itg_charter());
     charter
         .arg("gen")
         .arg(&ogg)
         .arg("-o")
-        .arg(&output)
+        .arg(&ctx.output)
         .args(["-d", &args.difficulties, "-s", &args.seed.to_string()])
-        .args(["--title", &title, "--artist", &artist])
+        .args(["--title", title, "--artist", artist])
         .arg("--banner")
         .arg(&banner)
         .arg("--background")
@@ -502,8 +668,14 @@ fn main() -> Result<()> {
     if let Some(d) = &args.device {
         charter.args(["--device", d]);
     }
-    let gen_out = Job::spawn("itg-charter gen", &mut charter)?.wait()?;
-    eprint!("{}", String::from_utf8_lossy(&gen_out.stderr));
+    let gen_out = {
+        let _gpu = ctx.charting.lock().unwrap_or_else(|e| e.into_inner());
+        log("generating charts");
+        Job::spawn("itg-charter gen", &mut charter)?.wait()?
+    };
+    for line in String::from_utf8_lossy(&gen_out.stderr).lines() {
+        log(line.trim());
+    }
     let sm = PathBuf::from(
         String::from_utf8_lossy(&gen_out.stdout)
             .trim()
@@ -514,7 +686,7 @@ fn main() -> Result<()> {
     anyhow::ensure!(sm.exists(), "itg-charter did not report a simfile");
 
     if let Some(video) = video {
-        step("waiting for the video encode");
+        log("charts ready, waiting for the video encode");
         let movie = video.wait()?;
         Job::spawn(
             "itg-charter decorate",
@@ -526,8 +698,112 @@ fn main() -> Result<()> {
         )?
         .wait()?;
     }
-    step("done");
-    println!("{}", sm.display());
+    log("done");
+    Ok(sm)
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    let urls = collect_urls(&args)?;
+    let ctx = Ctx {
+        cache_root: args
+            .cache
+            .clone()
+            .unwrap_or_else(|| home().join(".cache/itg-charter/youtube")),
+        output: args
+            .output
+            .clone()
+            .unwrap_or_else(|| home().join("ITG-YouTube")),
+        t0: Instant::now(),
+        charting: std::sync::Mutex::new(()),
+        args,
+    };
+
+    ctx.log(
+        "yt-dlp",
+        &format!("reading metadata of {} URL(s)", urls.len()),
+    );
+    let (infos, errors) = fetch_infos(&urls, ctx.args.yt_retries, |m| ctx.log("yt-dlp", m))?;
+    for e in &errors {
+        ctx.log("yt-dlp", e);
+    }
+    anyhow::ensure!(!infos.is_empty(), "no video found");
+    if infos.len() > 1 && (ctx.args.title.is_some() || ctx.args.artist.is_some()) {
+        bail!(
+            "--title / --artist only make sense with a single video ({} found)",
+            infos.len()
+        );
+    }
+    let songs: Vec<(Info, String, String)> = infos
+        .into_iter()
+        .map(|info| {
+            let (t, a) = song_names(&info);
+            let title = ctx.args.title.clone().unwrap_or(t);
+            let artist = ctx.args.artist.clone().unwrap_or(a);
+            (info, title, artist)
+        })
+        .collect();
+    for (i, (info, title, artist)) in songs.iter().enumerate() {
+        ctx.log(
+            "yt-dlp",
+            &format!(
+                "{}/{}: \"{title}\" by \"{artist}\" ({})",
+                i + 1,
+                songs.len(),
+                info.id
+            ),
+        );
+    }
+
+    // Worker pool: `jobs` songs prepared at the same time, charts one at a time.
+    let next = std::sync::Mutex::new(0usize);
+    let results: std::sync::Mutex<Vec<(usize, Result<PathBuf>)>> =
+        std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|s| {
+        for _ in 0..ctx.args.jobs.clamp(1, songs.len()) {
+            s.spawn(|| {
+                loop {
+                    let i = {
+                        let mut n = next.lock().unwrap();
+                        *n += 1;
+                        *n - 1
+                    };
+                    let Some((info, title, artist)) = songs.get(i) else {
+                        break;
+                    };
+                    let r = process(&ctx, info, title, artist);
+                    if let Err(e) = &r {
+                        ctx.log(title, &format!("FAILED: {e:#}"));
+                    }
+                    results.lock().unwrap().push((i, r));
+                }
+            });
+        }
+    });
+
+    let mut results = results.into_inner().unwrap();
+    results.sort_by_key(|r| r.0);
+    let failed = results.iter().filter(|r| r.1.is_err()).count() + errors.len();
+    eprintln!(
+        "\n{} song(s) ready, {failed} failed ({:.0}s):",
+        results.len() - results.iter().filter(|r| r.1.is_err()).count(),
+        ctx.t0.elapsed().as_secs_f64()
+    );
+    for (i, r) in &results {
+        match r {
+            Ok(sm) => {
+                eprintln!("  ok      {}", songs[*i].1);
+                println!("{}", sm.display());
+            }
+            Err(e) => eprintln!("  FAILED  {}: {e}", songs[*i].1),
+        }
+    }
+    for e in &errors {
+        eprintln!("  FAILED  {e}");
+    }
+    if failed > 0 {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
