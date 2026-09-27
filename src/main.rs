@@ -35,7 +35,8 @@ struct Args {
     /// Random seed of the charts (same seed + same video = same charts).
     #[arg(short, long, default_value_t = 0)]
     seed: u64,
-    /// Output folder (default: ~/.itgmania/Songs/YouTube). The song folder is created inside.
+    /// Output folder (default: ~/ITG-YouTube, linked into the game's Songs folder, see
+    /// README). The song folder is created inside.
     #[arg(short, long)]
     output: Option<PathBuf>,
     /// Skip the background video (it is included by default).
@@ -334,7 +335,7 @@ fn main() -> Result<()> {
     let output = args
         .output
         .clone()
-        .unwrap_or_else(|| home().join(".itgmania/Songs/YouTube"));
+        .unwrap_or_else(|| home().join("ITG-YouTube"));
 
     // Metadata.
     step("reading video metadata");

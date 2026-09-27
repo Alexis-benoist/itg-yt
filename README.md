@@ -6,7 +6,7 @@ Crée un dossier de chanson **ITGmania / In The Groove** complet à partir d'une
 itg-yt "https://www.youtube.com/watch?v=..."
 ```
 
-Le dossier `~/.itgmania/Songs/YouTube/<Titre>/` contient :
+Le dossier `~/ITG-YouTube/<Titre>/` contient :
 
 | fichier | contenu |
 |---|---|
@@ -15,7 +15,17 @@ Le dossier `~/.itgmania/Songs/YouTube/<Titre>/` contient :
 | `<Titre>-bg.mp4` | le clip en fond animé, H.264 jusqu'à 1080p, 30 i/s, sans son |
 | `bn.png`, `bg.png`, `jacket.png` | bannière 418×164, fond 1920×1080 et jaquette 512×512 tirés de la miniature |
 
-Relancer ITGmania (ou recharger les chansons) pour la voir apparaître.
+Relancer ITGmania (ou recharger les chansons) pour la voir apparaître dans le pack « YouTube ».
+
+### Brancher le dossier sur le jeu (une fois)
+
+`~/ITG-YouTube` est relié au jeu par un lien symbolique dans son dossier `Songs` :
+
+```sh
+ln -sfn ~/ITG-YouTube ~/Downloads/ITGmania-1.1.0-Linux-no-songs/itgmania/Songs/YouTube
+```
+
+(Adapter le chemin de l'installation d'ITGmania ; `-o DIR` change le dossier de sortie.)
 
 ## Fonctionnement
 
