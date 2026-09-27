@@ -1,0 +1,13 @@
+[package]
+name = "itg-yt"
+version = "0.1.0"
+edition = "2024"
+description = "Creates an ITGmania song folder (charts, audio, visuals, background video) from a YouTube URL"
+license = "GPL-3.0-only"
+repository = "https://github.com/Alexis-benoist/itg-yt"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"

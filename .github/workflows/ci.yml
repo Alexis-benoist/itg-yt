@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ffmpeg (the pipeline test encodes for real)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        # yt-dlp and itg-charter are replaced by fake scripts: no network, no GPU.
+        run: cargo test --release
+      - name: Build
+        run: cargo build --release
+      - name: Upload the Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: itg-yt-linux-x86_64
+          path: |
+            target/release/itg-yt
+            README.md
+            LICENSE
+          if-no-files-found: error
