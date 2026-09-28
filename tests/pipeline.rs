@@ -616,3 +616,55 @@ fn missing_tools_are_reported_before_anything_is_downloaded() {
     assert!(!stderr.contains("libx264"), "{stderr}");
     assert_ne!(o.status.code(), Some(2), "{stderr}");
 }
+
+#[test]
+fn setup_links_the_output_folder_into_the_game() {
+    if !ffmpeg_ok() {
+        return;
+    }
+    // Every tool is present (fakes): setup downloads nothing, it only links.
+    let env = Env::new("setup");
+    let songs = env.root.join("Songs");
+    std::fs::create_dir_all(&songs).unwrap();
+    let out = env.root.join("ITG-YouTube");
+    let setup = |extra: &[&str]| {
+        env.cmd()
+            .arg("setup")
+            .arg("--songs")
+            .arg(&songs)
+            .arg("-o")
+            .arg(&out)
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let o = setup(&["--check"]);
+    let stdout = String::from_utf8_lossy(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("missing  link"), "{stdout}");
+    assert!(!out.exists(), "--check changes nothing");
+
+    for _ in 0..2 {
+        let o = setup(&[]);
+        let stdout = String::from_utf8_lossy(&o.stdout);
+        assert!(o.status.success(), "{stdout}");
+        assert!(!stdout.contains("downloading"), "{stdout}");
+        assert_eq!(std::fs::read_link(songs.join("YouTube")).unwrap(), out);
+    }
+    let o = setup(&["--check"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+
+    // An existing folder is never replaced.
+    let other = env.root.join("Songs2");
+    std::fs::create_dir_all(other.join("YouTube/Some Song")).unwrap();
+    let o = env
+        .cmd()
+        .args(["setup", "--songs"])
+        .arg(&other)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{stdout}");
+    assert!(stdout.contains("left untouched"), "{stdout}");
+    assert!(other.join("YouTube/Some Song").is_dir());
+}

@@ -157,6 +157,14 @@ fn env_var(name: &'static str) -> Option<&'static str> {
     std::env::var_os(name).map(|_| name)
 }
 
+/// yt-dlp: runs `yt-dlp --version`.
+pub fn check_yt_dlp() -> Check {
+    let path = yt_dlp();
+    let mut cmd = Command::new(&path);
+    cmd.arg("--version");
+    yt_dlp_check(run(cmd).map(|v| format!("{} (version {})", path.display(), v.trim())))
+}
+
 /// yt-dlp: only checks that the program is there. Starting the standalone yt-dlp takes
 /// several seconds (it unpacks itself), too long before every run; if it is there but
 /// cannot start, the metadata call reports it ([`yt_dlp_cannot_start`]).
