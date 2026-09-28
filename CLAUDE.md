@@ -1,7 +1,7 @@
 # itg-yt
 
 URL YouTube → dossier de chanson ITGmania complet (charts, OGG, visuels, vidéo de fond).
-Projet séparé d'itg-charter (`~/itg-charter`, https://github.com/Alexis-benoist/itg-charter), utilisé
+Projet séparé d'itg-charter (https://github.com/Alexis-benoist/itg-charter), utilisé
 **comme bibliothèque** (dépendance git dans `Cargo.toml`, version figée par `Cargo.lock` ;
 `cargo update -p itg-charter` pour suivre `main`). Tout ce qui concerne le dossier de chanson et le
 `.sm` appartient à itg-charter (`song::create_song`, `song::decorate`, `song::Charts` /

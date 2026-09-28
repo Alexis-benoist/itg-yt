@@ -234,8 +234,9 @@ Background video:
 - `--video-preset veryfast`: x264 speed (default `medium`);
 - `--video-crf 26`: quality (lower = better and bigger).
 
-Measured on Usher's "Yeah!" (4 min 10 s, 12 cores, GTX 1650, default settings): charts ready in
-1 min 40 s, complete folder in 5 min 20 s; OGG 4.7 MB; 1080p video 115 MB. The 1080p encode is the
+Order of magnitude for a 4-minute song with the default settings, on a desktop computer with an
+NVIDIA GPU: charts ready in under 2 min, complete folder in about 5 min; OGG ≈ 5 MB, 1080p video
+≈ 100 MB. The 1080p encode is the
 longest step: for speed, `--video-height 720 --video-preset veryfast`.
 
 Environment variables: `ITG_YT_DLP` and `ITG_FFMPEG` (another yt-dlp / ffmpeg),
