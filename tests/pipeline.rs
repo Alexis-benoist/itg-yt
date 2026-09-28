@@ -122,6 +122,7 @@ impl Env {
             &format!(
                 r#"#!/bin/sh
 SRC='{src}'
+case " $* " in *" --version "*) echo 2099.01.01; exit 0;; esac
 case " $* " in *" -j "*)
   for a in "$@"; do
     case "$a" in http*)
@@ -156,16 +157,36 @@ cp "$SRC/$f" "$(echo "$out" | sed "s/%(ext)s/$ext/")"
         write_script(
             &root.join("ffmpeg"),
             &format!(
-                "#!/bin/sh\necho x >> '{src}/encodes.log'\nexec ffmpeg \"$@\"\n",
+                "#!/bin/sh\ncase \" $* \" in *\" -encoders \"*) exec ffmpeg \"$@\";; esac\n\
+                 echo x >> '{src}/encodes.log'\nexec ffmpeg \"$@\"\n",
                 src = src.display()
             ),
         );
+        // A JavaScript runtime for the preflight check (yt-dlp is fake anyway).
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        write_script(&root.join("bin/deno"), "#!/bin/sh\necho deno 2.0\n");
+        std::fs::create_dir_all(root.join("home")).unwrap();
         Env { root }
+    }
+
+    /// itg-yt with the fake tools, a JavaScript runtime and an empty home folder (so that
+    /// the tools installed by `itg-yt setup` on this machine are not used).
+    fn cmd(&self) -> Command {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_itg-yt"));
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![self.root.join("bin")];
+        dirs.extend(std::env::split_paths(&path));
+        c.env("PATH", std::env::join_paths(dirs).unwrap())
+            .env("HOME", self.root.join("home"))
+            .env("ITG_YT_DLP", self.root.join("yt-dlp"))
+            .env("ITG_FFMPEG", self.root.join("ffmpeg"))
+            .env("ITG_YT_RETRY_PAUSE_MS", "10");
+        c
     }
 
     /// Runs itg-yt on `urls` without Demucs (no check of the exit status).
     fn run_urls(&self, urls: &[&str], out: &str, extra: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_itg-yt"))
+        self.cmd()
             .args(urls)
             .arg("-o")
             .arg(self.root.join(out))
@@ -173,9 +194,6 @@ cp "$SRC/$f" "$(echo "$out" | sed "s/%(ext)s/$ext/")"
             .arg(self.root.join("cache"))
             .arg("--no-stems")
             .args(extra)
-            .env("ITG_YT_DLP", self.root.join("yt-dlp"))
-            .env("ITG_FFMPEG", self.root.join("ffmpeg"))
-            .env("ITG_YT_RETRY_PAUSE_MS", "10")
             .output()
             .unwrap()
     }
@@ -526,4 +544,53 @@ fn retries_are_bounded() {
         "{stderr}"
     );
     assert!(stderr.contains("0 song(s) ready, 1 failed"), "{stderr}");
+}
+
+#[test]
+fn missing_tools_are_reported_before_anything_is_downloaded() {
+    if !ffmpeg_ok() {
+        return;
+    }
+    let env = Env::new("preflight");
+    let run = |c: &mut Command| {
+        c.args(["https://www.youtube.com/watch?v=abc123", "-m", "3"])
+            .arg("--cache")
+            .arg(env.root.join("cache"))
+            .output()
+            .unwrap()
+    };
+    // yt-dlp that cannot be started: exit code 2, one message, nothing downloaded.
+    let o = run(env.cmd().env("ITG_YT_DLP", env.root.join("nowhere/yt-dlp")));
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("yt-dlp (downloads the videos from YouTube): not found"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("unset the ITG_YT_DLP"), "{stderr}");
+    assert!(stderr.contains("itg-yt setup"), "{stderr}");
+    assert!(!stderr.contains("ffmpeg ("), "ffmpeg is fine: {stderr}");
+    assert!(env.file("downloads.log").is_empty());
+    // yt-dlp there but not executable: same report.
+    let broken = env.root.join("broken-yt-dlp");
+    std::fs::write(&broken, "not a program").unwrap();
+    let o = run(env.cmd().env("ITG_YT_DLP", &broken));
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("cannot be started"), "{stderr}");
+
+    // An ffmpeg without libx264: needed for the video only.
+    let bad = env.root.join("ffmpeg-novideo");
+    write_script(
+        &bad,
+        "#!/bin/sh\necho ' A..... libvorbis            libvorbis'\necho ' V..... mpeg4                MPEG-4'\n",
+    );
+    let o = run(env.cmd().env("ITG_FFMPEG", &bad));
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("lacks the libx264 encoder"), "{stderr}");
+    let o = run(env.cmd().env("ITG_FFMPEG", &bad).arg("--no-video"));
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(!stderr.contains("libx264"), "{stderr}");
+    assert_ne!(o.status.code(), Some(2), "{stderr}");
 }

@@ -9,7 +9,10 @@
 //!    (called as a library) while the video is still encoding;
 //! 4. itg-charter then adds the background movie.
 //!
-//! External tools: yt-dlp and ffmpeg (overridable with `ITG_YT_DLP` and `ITG_FFMPEG`).
+//! External tools: yt-dlp and ffmpeg (overridable with `ITG_YT_DLP` and `ITG_FFMPEG`),
+//! checked before anything is downloaded.
+
+mod tools;
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -19,6 +22,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
+use tools::{ffmpeg, home, in_path, yt_dlp};
 
 #[derive(Parser)]
 #[command(
@@ -112,40 +116,6 @@ impl Info {
     }
 }
 
-/// Home folder: `$HOME`, or `%USERPROFILE%` on Windows.
-fn home() -> PathBuf {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map_or_else(|| PathBuf::from("."), PathBuf::from)
-}
-
-/// Whether an executable is in the PATH (also as `name.exe` on Windows).
-fn in_path(name: &str) -> bool {
-    let names = [
-        name.to_string(),
-        format!("{name}{}", std::env::consts::EXE_SUFFIX),
-    ];
-    std::env::var_os("PATH").is_some_and(|p| {
-        std::env::split_paths(&p).any(|d| names.iter().any(|n| d.join(n).is_file()))
-    })
-}
-
-fn yt_dlp() -> PathBuf {
-    if let Some(p) = std::env::var_os("ITG_YT_DLP") {
-        return PathBuf::from(p);
-    }
-    let local = home().join(".local/bin/yt-dlp");
-    if local.exists() {
-        local
-    } else {
-        PathBuf::from("yt-dlp")
-    }
-}
-
-fn ffmpeg() -> PathBuf {
-    std::env::var_os("ITG_FFMPEG").map_or_else(|| PathBuf::from("ffmpeg"), PathBuf::from)
-}
-
 /// A running child process with a label for error messages.
 struct Job {
     what: String,
@@ -222,10 +192,8 @@ fn yt_dlp_base() -> Command {
         "--extractor-retries",
         "3",
     ]);
-    // YouTube needs a JavaScript runtime; yt-dlp only enables deno by default.
-    if !in_path("deno") && in_path("node") {
-        c.args(["--js-runtimes", "node"]);
-    }
+    // The JavaScript runtime and ffmpeg itg-yt found (maybe outside the PATH).
+    c.args(tools::yt_dlp_tool_args());
     c
 }
 
@@ -460,10 +428,7 @@ fn fetch_infos(
     loop {
         let mut cmd = yt_dlp_base();
         cmd.args(["-j", "--ignore-errors"]).args(urls);
-        let out = cmd
-            .stdin(Stdio::null())
-            .output()
-            .context("cannot start yt-dlp")?;
+        let out = cmd.stdin(Stdio::null()).output()?;
         for line in String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter(|l| !l.trim().is_empty())
@@ -709,6 +674,12 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let urls = collect_urls(&args)?;
     let charts = charts_of(&args)?;
+    // Before any download: every tool is there and complete.
+    let problems = tools::report_problems(&tools::check_all(!args.no_video));
+    if !problems.is_empty() {
+        eprint!("{problems}");
+        std::process::exit(2);
+    }
     let ctx = Ctx {
         charts,
         cache_root: args
@@ -728,7 +699,20 @@ fn main() -> Result<()> {
         "yt-dlp",
         &format!("reading metadata of {} URL(s)", urls.len()),
     );
-    let (infos, errors) = fetch_infos(&urls, ctx.args.yt_retries, |m| ctx.log("yt-dlp", m))?;
+    let (infos, errors) = match fetch_infos(&urls, ctx.args.yt_retries, |m| ctx.log("yt-dlp", m)) {
+        Ok(r) => r,
+        Err(e) => match e.downcast_ref::<std::io::Error>() {
+            // yt-dlp is there but does not start: same report as a missing tool.
+            Some(io) => {
+                eprint!(
+                    "{}",
+                    tools::report_problems(&[tools::yt_dlp_cannot_start(io)])
+                );
+                std::process::exit(2);
+            }
+            None => return Err(e),
+        },
+    };
     for e in &errors {
         ctx.log("yt-dlp", e);
     }
