@@ -10,8 +10,9 @@
 //! 4. itg-charter then adds the background movie.
 //!
 //! External tools: yt-dlp and ffmpeg (overridable with `ITG_YT_DLP` and `ITG_FFMPEG`),
-//! checked before anything is downloaded.
+//! checked before anything is downloaded; `itg-yt setup` installs them (see `setup.rs`).
 
+mod setup;
 mod tools;
 
 use anyhow::{Context, Result, bail};
@@ -27,9 +28,14 @@ use tools::{ffmpeg, home, in_path, yt_dlp};
 #[derive(Parser)]
 #[command(
     version,
-    about = "Creates an ITGmania song folder (charts, audio, visuals, background video) from a YouTube URL"
+    about = "Creates an ITGmania song folder (charts, audio, visuals, background video) from a YouTube URL",
+    after_help = "First time? Run `itg-yt setup`: it installs what is missing and links the output folder into ITGmania.",
+    args_conflicts_with_subcommands = true,
+    subcommand_negates_reqs = true
 )]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Cmd>,
     /// YouTube URLs: videos, or playlists (a video URL with `&list=` stays one video).
     #[arg(required_unless_present = "batch_file")]
     urls: Vec<String>,
@@ -90,6 +96,13 @@ struct Args {
     /// Download and encode cache folder (default: ~/.cache/itg-charter/youtube).
     #[arg(long)]
     cache: Option<PathBuf>,
+}
+
+#[derive(clap::Subcommand)]
+enum Cmd {
+    /// Installs the missing tools (yt-dlp, deno, ffmpeg) into itg-yt's own folder and
+    /// links the output folder into ITGmania's Songs folder. Safe to run again.
+    Setup(setup::SetupArgs),
 }
 
 /// The fields of `yt-dlp -j` we use (one JSON object per video).
@@ -706,6 +719,9 @@ fn charts_of(args: &Args) -> Result<Charts> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if let Some(Cmd::Setup(setup_args)) = &args.command {
+        std::process::exit(setup::run(setup_args));
+    }
     let urls = collect_urls(&args)?;
     let charts = charts_of(&args)?;
     // Before any download: every tool is there and complete.
