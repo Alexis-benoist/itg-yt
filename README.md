@@ -11,11 +11,89 @@ itg-yt "https://www.youtube.com/playlist?list=..."   # a whole playlist
 itg-yt -a my-songs.txt                # one URL per line (# = comment, - = stdin)
 ```
 
-- [Installation](#installation): itg-yt, ffmpeg, yt-dlp, Demucs, hooking into the game
+- [Installation](#installation): download itg-yt, run `itg-yt setup`, done
+  ([manual installation](#manual-installation): ffmpeg, yt-dlp, Demucs, hooking into the game)
 - [Usage](#usage) · [Options](#options) · [How it works](#how-it-works)
 - [Troubleshooting](#troubleshooting)
 
 ## Installation
+
+### Quick start
+
+1. **Download itg-yt**: from the
+   [Releases](https://github.com/Alexis-benoist/itg-yt/releases) page (latest release = latest
+   commit on `main`), the archive for your system:
+
+   | system | archive |
+   |---|---|
+   | Linux x86_64 | `itg-yt-vX.Y.Z-linux-x86_64.tar.gz` |
+   | macOS Apple Silicon (M1…) | `itg-yt-vX.Y.Z-macos-arm64.tar.gz` |
+   | macOS Intel | `itg-yt-vX.Y.Z-macos-x86_64.tar.gz` |
+   | Windows | `itg-yt-vX.Y.Z-windows-x86_64.zip` |
+
+   ```sh
+   # Linux / macOS: verify, extract, put in the PATH
+   sha256sum -c itg-yt-vX.Y.Z-linux-x86_64.tar.gz.sha256   # macOS: shasum -a 256 -c …
+   tar xzf itg-yt-vX.Y.Z-linux-x86_64.tar.gz
+   install -m 755 itg-yt-vX.Y.Z-linux-x86_64/itg-yt ~/.local/bin/
+   ```
+
+   On macOS the binary is not signed: before the first run,
+   `xattr -d com.apple.quarantine ~/.local/bin/itg-yt`. On Windows, extract the `.zip` and put
+   `itg-yt.exe` in a folder of the `PATH` (or run it from its folder).
+
+   Or build it from source: see [Manual installation](#1-itg-yt-from-source).
+
+2. **Run `itg-yt setup`** (once):
+
+   ```sh
+   itg-yt setup
+   ```
+
+   It downloads what is missing (yt-dlp, deno as the JavaScript runtime yt-dlp needs, ffmpeg
+   with libvorbis and libx264) from their official release pages, checks each download against
+   its published SHA-256, and puts them in itg-yt's own folder (nothing is installed system-wide,
+   no administrator rights needed):
+
+   | system | tools folder |
+   |---|---|
+   | Linux | `~/.local/share/itg-yt/bin` |
+   | macOS | `~/Library/Application Support/itg-yt/bin` |
+   | Windows | `%LOCALAPPDATA%\itg-yt\bin` |
+
+   Tools you already have (in the `PATH`, or set with `ITG_YT_DLP` / `ITG_FFMPEG`) are used
+   as they are. Then it links the output folder `~/ITG-YouTube` into ITGmania's `Songs` folder
+   as `YouTube` (a symbolic link; a junction on Windows), so that the songs show up in the game
+   as the "YouTube" pack. For a **portable** ITGmania, give its `Songs` folder:
+   `itg-yt setup --songs "<ITGmania folder>/Songs"`. An existing `Songs/YouTube` folder is never
+   replaced. Running `setup` again is harmless: it only does what is left.
+
+3. **Try it**:
+
+   ```sh
+   itg-yt --no-video "https://www.youtube.com/watch?v=..."   # quick first try, without the video
+   ```
+
+   The last line printed is the path of the created `.sm`. Restart ITGmania (or reload songs):
+   the song is in the "YouTube" pack.
+
+Also:
+
+- `itg-yt setup --check` reports what is installed and what is missing, without changing
+  anything;
+- `itg-yt setup --update` downloads again the tools it installed: the first thing to do when
+  YouTube downloads start failing (YouTube changes its protections often);
+- `itg-yt setup --demucs` also installs Demucs (optional, better charts; downloads PyTorch,
+  several GB) with [uv](https://docs.astral.sh/uv/), which must be installed first. Without an
+  NVIDIA GPU (which includes every Mac), run itg-yt with `--device cpu`. Details:
+  [Demucs](#4-demucs-optional-recommended).
+
+Every run checks the tools first: if one is missing or incomplete, itg-yt says which one, what
+it is for and how to install it, and stops (exit code 2) before downloading anything.
+
+## Manual installation
+
+Instead of `itg-yt setup`, or to use tools from your package manager.
 
 ### What you need
 
@@ -40,31 +118,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 winget install astral-sh.uv
 ```
 
-### 1. itg-yt
+### 1. itg-yt from source
 
-**Prebuilt binary**: from the
-[Releases](https://github.com/Alexis-benoist/itg-yt/releases) page (latest release = latest commit
-on `main`), download the archive for your system:
-
-| system | archive |
-|---|---|
-| Linux x86_64 | `itg-yt-vX.Y.Z-linux-x86_64.tar.gz` |
-| macOS Apple Silicon (M1…) | `itg-yt-vX.Y.Z-macos-arm64.tar.gz` |
-| macOS Intel | `itg-yt-vX.Y.Z-macos-x86_64.tar.gz` |
-| Windows | `itg-yt-vX.Y.Z-windows-x86_64.zip` |
-
-```sh
-# Linux / macOS: verify, extract, put in the PATH
-sha256sum -c itg-yt-vX.Y.Z-linux-x86_64.tar.gz.sha256   # macOS: shasum -a 256 -c …
-tar xzf itg-yt-vX.Y.Z-linux-x86_64.tar.gz
-install -m 755 itg-yt-vX.Y.Z-linux-x86_64/itg-yt ~/.local/bin/
-```
-
-On macOS the binary is not signed: before the first run,
-`xattr -d com.apple.quarantine ~/.local/bin/itg-yt`. On Windows, extract the `.zip` and put
-`itg-yt.exe` in a folder of the `PATH` (or run it from its folder).
-
-**Or from source**: you need stable Rust ([rustup](https://rustup.rs)) and a C compiler, since
+You need stable Rust ([rustup](https://rustup.rs)) and a C compiler, since
 itg-charter compiles aubio:
 
 | system | C compiler |
@@ -115,7 +171,8 @@ Then a JavaScript runtime, which yt-dlp needs for YouTube:
 | Windows | `winget install DenoLand.Deno` (or `winget install OpenJS.NodeJS.LTS`) |
 
 yt-dlp uses deno by default; when only node is installed, itg-yt passes `--js-runtimes node`.
-itg-yt prefers `~/.local/bin/yt-dlp` (where uv installs it), then the one in the `PATH`.
+itg-yt looks for yt-dlp in `ITG_YT_DLP`, then in its tools folder (filled by `itg-yt setup`),
+then `~/.local/bin/yt-dlp` (where uv installs it), then the `PATH`.
 
 YouTube changes its protections often: **update yt-dlp** at the first download failure:
 
@@ -123,7 +180,12 @@ YouTube changes its protections often: **update yt-dlp** at the first download f
 uv tool upgrade yt-dlp
 ```
 
+(`itg-yt setup --update` for a yt-dlp installed by `itg-yt setup`.)
+
 ### 4. Demucs (optional, recommended)
+
+`itg-yt setup --demucs` runs the commands below for you when [uv](https://docs.astral.sh/uv/) is
+installed.
 
 Charts are better when the drums and bass are separated from the rest. Without Demucs, itg-yt still
 works: it prints `warning: no stems (…); analysing the full mix only` and charts the full mix
@@ -179,13 +241,13 @@ mkdir %USERPROFILE%\ITG-YouTube
 mklink /J "%APPDATA%\ITGmania\Songs\YouTube" "%USERPROFILE%\ITG-YouTube"
 ```
 
-Alternatively, on any system, write straight into the game with `-o <Songs>/YouTube`.
+Once the tools are installed, `itg-yt setup` (with `--songs DIR` for a portable install) does only
+this step. Alternatively, on any system, write straight into the game with `-o <Songs>/YouTube`.
 
 ### Check the installation
 
 ```sh
-itg-yt --help
-yt-dlp --version
+itg-yt setup --check
 itg-yt --no-video "https://www.youtube.com/watch?v=..."   # quick first try, without the video
 ```
 
@@ -227,7 +289,8 @@ Several songs:
 Reliability: yt-dlp retries network errors itself (`--retries`, `--fragment-retries`,
 `--extractor-retries`). If a call still fails (crash, failed extraction), itg-yt reruns it up to
 `--yt-retries 3` times, after 2 s, 4 s then 8 s. For the metadata, the grouped call is redone and
-the results are merged.
+the results are merged. Errors that a new try cannot fix (unsupported URL, private, removed or
+unavailable video, ffmpeg not found…) are not retried.
 
 Background video:
 - `--video-height 720`: maximum height (default 1080; never upscaled);
@@ -239,7 +302,8 @@ NVIDIA GPU: charts ready in under 2 min, complete folder in about 5 min; OGG ≈
 ≈ 100 MB. The 1080p encode is the
 longest step: for speed, `--video-height 720 --video-preset veryfast`.
 
-Environment variables: `ITG_YT_DLP` and `ITG_FFMPEG` (another yt-dlp / ffmpeg),
+Environment variables: `ITG_YT_DLP` and `ITG_FFMPEG` (another yt-dlp / ffmpeg; they take
+precedence over the tools folder of `itg-yt setup`, which takes precedence over the `PATH`),
 `ITG_CHARTER_PYTHON` (Python with Demucs).
 
 ## How it works
@@ -263,12 +327,15 @@ Environment variables: `ITG_YT_DLP` and `ITG_FFMPEG` (another yt-dlp / ffmpeg),
 
 | symptom | fix |
 |---|---|
-| `warning: no stems (Demucs python not found at …)` | not blocking (charts from the full mix); to get stems: step 4 or `ITG_CHARTER_PYTHON`; to silence it: `--no-stems` |
-| yt-dlp error: `Sign in to confirm…`, `n challenge`, `Requested format is not available` | `uv tool upgrade yt-dlp`, check it was installed with `[default]` and that deno or node is in the `PATH` |
-| `Unknown encoder 'libx264'` or `'libvorbis'` | incomplete ffmpeg: get a full build (step 2) |
+| `error: some tools itg-yt needs are missing or incomplete` (exit code 2) | `itg-yt setup`, or install the tools named in the message by hand ([manual installation](#manual-installation)) |
+| `warning: no stems (Demucs python not found at …)` | not blocking (charts from the full mix); to get stems: `itg-yt setup --demucs`, [step 4](#4-demucs-optional-recommended) or `ITG_CHARTER_PYTHON`; to silence it: `--no-stems` |
+| yt-dlp error: `Sign in to confirm…`, `n challenge`, `Requested format is not available` | update yt-dlp: `itg-yt setup --update` (yt-dlp installed by setup) or `uv tool upgrade yt-dlp` (check it was installed with `[default]` and that deno or node is in the `PATH`) |
+| `lacks the libx264 encoder`, `Unknown encoder 'libx264'` or `'libvorbis'` | incomplete ffmpeg: `itg-yt setup` downloads a complete one, or get a full build ([step 2](#2-ffmpeg)); without libx264, `--no-video` still works |
+| `setup`: `ITGmania Songs folder: … not found` | start ITGmania once, or for a portable install `itg-yt setup --songs "<ITGmania folder>/Songs"` |
+| `setup`: `… already exists and is not a link to …` | a `Songs/YouTube` folder was already there: remove it (after moving its songs) and run `itg-yt setup` again, or write into it with `itg-yt -o "<Songs>/YouTube" URL` |
 | `CUDA out of memory` | `--device cpu` (or close whatever is using the GPU) |
 | build: `implicit declaration of function 'strncasecmp'` | build from the clone (see `.cargo/config.toml`) or `export CFLAGS=-D_DEFAULT_SOURCE` |
-| the song does not show up in the game | check the link from step 5, then reload songs or restart ITGmania |
+| the song does not show up in the game | `itg-yt setup --check` (the link), then reload songs or restart ITGmania |
 
 ## Releases
 
