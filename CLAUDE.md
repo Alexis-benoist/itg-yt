@@ -40,6 +40,10 @@ Projet séparé d'itg-charter (https://github.com/Alexis-benoist/itg-charter), u
 - **Cache** (`~/.cache/itg-charter/youtube/<id>/`) : téléchargements, puis `encoded/` (OGG, images,
   vidéo par `video-<h>p-<preset>-crf<n>/`). Les encodages sont écrits sous un nom `.partial` puis
   renommés : jamais de fichier tronqué réutilisé.
+- **Marquage** : les `.sm` produits portent « itg-charter » dans `#CREDIT` et la description des
+  charts (écrits par itg-charter). Ne pas le retirer : `~/ITG-YouTube` est lié dans le dossier Songs
+  du jeu, et itg-charter exclut ces fichiers de ses données d'entraînement / d'évaluation par ce
+  marquage (`Simfile::is_generated`). Vérifié par `builds_a_complete_song_folder`.
 - Les charts sont générés sur l'**OGG final** (les octets que le jeu lit) : synchro juste et
   reproductibilité (même vidéo + même seed ⇒ même `.sm`). Encodages en `-bitexact`.
 - yt-dlp a besoin des scripts EJS et d'un runtime JS (`uv tool install "yt-dlp[default]"`). Si

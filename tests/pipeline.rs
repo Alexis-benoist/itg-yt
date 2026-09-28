@@ -266,6 +266,9 @@ fn builds_a_complete_song_folder() {
     assert_eq!(tag(&text, "BANNER"), Some("bn.png"));
     assert_eq!(tag(&text, "BACKGROUND"), Some("bg.png"));
     assert_eq!(tag(&text, "JACKET"), Some("jacket.png"));
+    // Marked as generated, so that itg-charter never trains or evaluates on it if the
+    // output folder is linked into the game's Songs (Simfile::is_generated).
+    assert!(tag(&text, "CREDIT").unwrap().contains("itg-charter"));
     let bg = tag(&text, "BGCHANGES").unwrap();
     assert!(
         bg.ends_with("=Great Song-bg.mp4=1.000=0=0=0=StretchNoLoop===="),
