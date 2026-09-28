@@ -1,0 +1,18 @@
+#!/bin/sh
+# Fake yt-dlp for ci/newbie.sh (like the one of tests/pipeline.rs): metadata of one video,
+# and "downloads" that copy the media of $FAKE_YT_SRC to the -o template.
+case " $* " in *" --version "*) echo 2099.01.01; exit 0;; esac
+case " $* " in *" -j "*)
+  echo '{"id":"abc123","title":"Some Artist - Great Song (Official Video)","webpage_url":"https://www.youtube.com/watch?v=abc123"}'
+  exit 0;;
+esac
+out=""; fmt=""; thumb=0; prev=""
+for a in "$@"; do
+  case "$a" in --write-thumbnail) thumb=1;; esac
+  [ "$prev" = "-o" ] && out="$a"
+  [ "$prev" = "-f" ] && fmt="$a"
+  prev="$a"
+done
+if [ $thumb = 1 ]; then f=thumb.jpg; ext=jpg
+else case "$fmt" in bestaudio*) f=audio.ogg; ext=ogg;; *) f=video.mp4; ext=mp4;; esac; fi
+cp "$FAKE_YT_SRC/$f" "$(echo "$out" | sed "s/%(ext)s/$ext/")"

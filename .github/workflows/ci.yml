@@ -3,6 +3,11 @@ name: CI
 on:
   push:
   pull_request:
+  # Weekly: the newcomer job downloads the latest yt-dlp / deno / ffmpeg, so a renamed
+  # upstream asset is caught even without pushes. Releases only run on push (see `version`).
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,6 +40,42 @@ jobs:
             README.md
             LICENSE
           if-no-files-found: error
+
+  # A newcomer on each OS: nothing installed, then `itg-yt setup` (real downloads of the
+  # tools), the link into a fake ITGmania Songs folder, and a full run with the downloaded
+  # ffmpeg and a fake yt-dlp (Unix). See ci/newbie.sh and ci/newbie.ps1.
+  newbie:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: newbie
+      - name: Build
+        run: cargo build --locked --release
+      - name: Newcomer scenarios (Unix)
+        if: runner.os != 'Windows'
+        run: ci/newbie.sh target/release/itg-yt
+      - name: Newcomer scenarios (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./ci/newbie.ps1 target/release/itg-yt.exe
+      # Runner IPs are often blocked by YouTube: informative only, never required.
+      - name: Real YouTube download (weekly, allowed to fail, Unix)
+        if: github.event_name == 'schedule' && runner.os != 'Windows'
+        continue-on-error: true
+        run: ci/newbie.sh target/release/itg-yt youtube
+      - name: Real YouTube download (weekly, allowed to fail, Windows)
+        if: github.event_name == 'schedule' && runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: ./ci/newbie.ps1 target/release/itg-yt.exe youtube
 
   # Every push to main (and every v* tag) publishes a GitHub release with binaries for
   # all platforms, once the checks have passed. Pushes to main get the version
