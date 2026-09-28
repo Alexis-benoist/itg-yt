@@ -214,8 +214,41 @@ fn retry_pause(attempt: u32) -> Duration {
     Duration::from_millis(first << (attempt - 1).min(6))
 }
 
+/// yt-dlp error messages that another try will not fix (as opposed to network errors,
+/// crashes or failed extractions, which often work on a new try).
+const PERMANENT_ERRORS: [&str; 15] = [
+    "ffmpeg not found",
+    "ffprobe not found",
+    "ffprobe and ffmpeg not found",
+    "unsupported url",
+    "is not a valid url",
+    "private video",
+    "video unavailable",
+    "this video is unavailable",
+    "this video is not available",
+    "this video has been removed",
+    "has been terminated",
+    "members-only",
+    "join this channel",
+    "confirm your age",
+    "http error 404",
+];
+
+/// Whether a yt-dlp error message is permanent (see [`PERMANENT_ERRORS`]).
+fn is_permanent_message(msg: &str) -> bool {
+    let msg = msg.to_lowercase();
+    PERMANENT_ERRORS.iter().any(|p| msg.contains(p))
+}
+
+/// Whether a failed run is not worth retrying: the program could not be started, or it
+/// reported a permanent error.
+fn is_permanent(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<std::io::Error>()) || is_permanent_message(&format!("{e:#}"))
+}
+
 /// Runs a command built by `make`, retrying up to `retries` times when it fails
 /// (yt-dlp sometimes crashes or fails to extract a video, then works on a new try).
+/// Permanent errors ([`is_permanent`]) are returned at once.
 fn run_with_retries(
     what: &str,
     retries: u32,
@@ -226,7 +259,7 @@ fn run_with_retries(
     loop {
         match Job::spawn(what, &mut make()).and_then(Job::wait) {
             Ok(out) => return Ok(out),
-            Err(e) if attempt < retries => {
+            Err(e) if attempt < retries && !is_permanent(&e) => {
                 attempt += 1;
                 let pause = retry_pause(attempt);
                 let reason = e.to_string();
@@ -443,14 +476,15 @@ fn fetch_infos(
             .filter(|l| l.starts_with("ERROR"))
             .map(String::from)
             .collect();
-        if errors.is_empty() || attempt >= retries {
+        // Only transient errors are worth another call.
+        if errors.iter().all(|e| is_permanent_message(e)) || attempt >= retries {
             return Ok((infos, errors));
         }
         attempt += 1;
         let pause = retry_pause(attempt);
         log(&format!(
             "{} URL(s) failed, retry {attempt}/{retries} in {:.0}s",
-            errors.len(),
+            errors.iter().filter(|e| !is_permanent_message(e)).count(),
             pause.as_secs_f64()
         ));
         std::thread::sleep(pause);
@@ -832,6 +866,53 @@ mod tests {
             ..info("Tune")
         });
         assert_eq!((t.as_str(), a.as_str()), ("Tune", "Band"));
+    }
+
+    #[test]
+    fn permanent_errors_are_not_retried() {
+        for msg in [
+            "thumbnail download failed:\nERROR: Preprocessing: ffmpeg not found. Please install or provide the path using --ffmpeg-location",
+            "ERROR: Unsupported URL: https://example.com/",
+            "ERROR: [youtube] abc: Private video. Sign in if you've been granted access to this video",
+            "ERROR: [youtube] abc: Video unavailable",
+            "ERROR: [youtube] aaaaaaaaaaa: This video is unavailable",
+            "ERROR: [generic] x: Unable to download webpage: HTTP Error 404: Not Found",
+        ] {
+            assert!(is_permanent(&anyhow::anyhow!("{msg}")), "{msg}");
+        }
+        for msg in [
+            "ERROR: simulated crash",
+            "ERROR: [youtube] abc: temporary failure",
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+            "ERROR: [download] Got error: The read operation timed out",
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot",
+        ] {
+            assert!(!is_permanent(&anyhow::anyhow!("{msg}")), "{msg}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_with_retries_stops_on_permanent_errors() {
+        let tries = std::cell::Cell::new(0);
+        let log = |_: &str| tries.set(tries.get() + 1);
+        // A program that cannot be started: no retry.
+        let e = run_with_retries("x", 3, || Command::new("/nonexistent/yt-dlp"), log);
+        assert!(e.is_err());
+        assert_eq!(tries.get(), 0);
+        // A permanent yt-dlp error: no retry either.
+        let e = run_with_retries(
+            "x",
+            3,
+            || {
+                let mut c = Command::new("sh");
+                c.args(["-c", "echo 'ERROR: Unsupported URL: x' >&2; exit 1"]);
+                c
+            },
+            log,
+        );
+        assert!(format!("{:#}", e.unwrap_err()).contains("Unsupported URL"));
+        assert_eq!(tries.get(), 0);
     }
 
     #[test]

@@ -135,6 +135,7 @@ case " $* " in *" -j "*)
   done
   exit 0;;
 esac
+if [ -f "$SRC/unsupported" ]; then echo "ERROR: Unsupported URL: $*" >&2; exit 1; fi
 for t in "$SRC"/crash-*; do
   if rm "$t" 2>/dev/null; then echo "ERROR: simulated crash" >&2; exit 1; fi
 done
@@ -547,6 +548,24 @@ fn retries_are_bounded() {
         "{stderr}"
     );
     assert!(stderr.contains("0 song(s) ready, 1 failed"), "{stderr}");
+}
+
+#[test]
+fn permanent_errors_are_not_retried() {
+    if !ffmpeg_ok() {
+        return;
+    }
+    let env = Env::new("permanent");
+    std::fs::write(env.root.join("src/unsupported"), "").unwrap();
+    let o = env.run_urls(
+        &["https://www.youtube.com/watch?v=abc123"],
+        "songs",
+        &["--no-video", "-m", "3"],
+    );
+    let stderr = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success());
+    assert!(stderr.contains("Unsupported URL"), "{stderr}");
+    assert!(!stderr.contains("retry"), "{stderr}");
 }
 
 #[test]
