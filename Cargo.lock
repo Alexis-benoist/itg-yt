@@ -388,7 +388,7 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 [[package]]
 name = "itg-charter"
 version = "0.1.0"
-source = "git+https://github.com/Alexis-benoist/itg-charter.git#cf827d0829220545a6755e2b7f5eade2b999890c"
+source = "git+https://github.com/Alexis-benoist/itg-charter.git#d37339fcbc5f1c6b7b7b02f564a03a88c076caba"
 dependencies = [
  "anyhow",
  "aubio-rs",
