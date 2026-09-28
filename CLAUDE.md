@@ -46,5 +46,16 @@ Projet séparé d'itg-charter (https://github.com/Alexis-benoist/itg-charter), u
   marquage (`Simfile::is_generated`). Vérifié par `builds_a_complete_song_folder`.
 - Les charts sont générés sur l'**OGG final** (les octets que le jeu lit) : synchro juste et
   reproductibilité (même vidéo + même seed ⇒ même `.sm`). Encodages en `-bitexact`.
+- **Outils** (`src/tools.rs`) : recherche `ITG_YT_DLP`/`ITG_FFMPEG`, puis le dossier d'outils
+  d'`itg-yt setup` (`~/.local/share/itg-yt/bin`, équivalents macOS/Windows), puis le `PATH`.
+  Vérification rapide avant tout téléchargement (yt-dlp présent, deno ou node, ffmpeg avec
+  libvorbis et libx264 sauf `--no-video`) : un message par outil manquant, code de retour 2.
+  Pas de `yt-dlp --version` avant chaque exécution (3 à 6 s pour le binaire autonome).
+- **`itg-yt setup`** (`src/setup.rs`) : télécharge les outils manquants depuis les releases
+  officielles (curl + tar du système, SHA-256 vérifié), crée le lien `<Songs>/YouTube` sans
+  jamais écraser un dossier existant ; `--check`, `--update`, `--songs`, `--demucs`. Les tests
+  restent hors-ligne (faux outils, aucun téléchargement dans `cargo test`).
+- **Erreurs permanentes** (outil introuvable, URL non supportée, vidéo privée/indisponible,
+  ffmpeg introuvable…) : pas de relance (`is_permanent`).
 - yt-dlp a besoin des scripts EJS et d'un runtime JS (`uv tool install "yt-dlp[default]"`). Si
   deno est absent et node présent, on passe `--js-runtimes node`.
